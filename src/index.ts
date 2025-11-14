@@ -62,7 +62,8 @@ export async function apply(ctx: Context, cfg: Config) {
     .option('player','-p <player>比对玩家')
     .action(async ({session, options}, server) => {
       if (!session.guildId) return '请在群组中使用该指令'
-      if (await ctx.database.get('bangdream_shift', {group_gid: session.gid, type: 'tracker'})) return '当前已开启推送，请先删除'
+      const nowTracker = await ctx.database.get('bangdream_shift', {group_gid: session.gid, type: 'tracker'});
+      if (nowTracker?.length) return '当前已开启推送，请先删除'
       let mainServer: Server;
       if (server) {
         const serverFromServerNameFuzzySearch = await utils.serverNameFuzzySearchResult(ctx, cfg, server)
