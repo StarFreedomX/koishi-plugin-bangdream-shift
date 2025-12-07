@@ -497,6 +497,7 @@ const shiftTable = new ShiftTable(start, end);
 shiftTable.setRanking('Main', 'main')
 shiftTable.setRanking('Alice', '10')
 
+
 shiftTable.addShift(0, 15, 24, 'Main');
 shiftTable.addShift(1, 0, 24, 'Main');
 shiftTable.addShift(1, 2, 5, 'Alice');
