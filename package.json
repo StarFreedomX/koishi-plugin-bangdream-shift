@@ -1,40 +1,45 @@
 {
-  "name": "koishi-plugin-bangdream-shift",
-  "description": "bangdream排班表插件",
-  "version": "0.0.4",
-  "contributors": [
-    "StarFreedomX <starfreedomx@outlook.com>"
-  ],
-  "main": "lib/index.js",
-  "typings": "lib/index.d.ts",
-  "files": [
-    "lib",
-    "dist"
-  ],
-  "license": "MIT",
-  "homepage": "https://github.com/StarFreedomX/koishi-plugin-bangdream-shift",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/StarFreedomX/koishi-plugin-bangdream-shift.git"
-  },
-  "scripts": {},
-  "keywords": [
-    "chatbot",
-    "koishi",
-    "plugin"
-  ],
-  "peerDependencies": {
-    "koishi": "^4.18.7"
-  },
-  "koishi": {
-    "description": {
-      "en": "BanG Dream Shift Tool",
-      "zh": "邦多利冲榜排班插件"
+    "name": "koishi-plugin-bangdream-shift",
+    "description": "bangdream排班表插件",
+    "version": "1.0.0",
+    "contributors": [
+        "StarFreedomX <starfreedomx@outlook.com>"
+    ],
+    "main": "lib/index.js",
+    "typings": "lib/index.d.ts",
+    "files": [
+        "lib",
+        "dist"
+    ],
+    "license": "MIT",
+    "homepage": "https://github.com/StarFreedomX/koishi-plugin-bangdream-shift",
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/StarFreedomX/koishi-plugin-bangdream-shift.git"
     },
-    "service": {},
-    "hidden": false
-  },
-  "dependencies": {
-    "axios": "^1.10.0"
-  }
+    "scripts": {},
+    "keywords": [
+        "chatbot",
+        "koishi",
+        "plugin",
+        "bangdream"
+    ],
+    "peerDependencies": {
+        "koishi": "^4.18.7",
+        "koishi-plugin-puppeteer": "^3.9.0"
+    },
+    "koishi": {
+        "description": {
+            "en": "BanG Dream Shift Tool",
+            "zh": "邦多利冲榜排班插件"
+        },
+        "service": {
+            "required": ["database"],
+            "optional": ["puppeteer"]
+        },
+        "hidden": false
+    },
+    "dependencies": {
+        "axios": "^1.10.0"
+    }
 }

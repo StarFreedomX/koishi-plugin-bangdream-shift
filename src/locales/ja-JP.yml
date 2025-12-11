@@ -1,0 +1,75 @@
+permission-denied: '権限がありません'
+lack: 'パラメータが不足しています: {params}'
+noGroups: '現在のグループ／サーバーはどのシフトにも紐付いていません'
+notManager: '現在のグループ／サーバーにはこのシフトの管理権限がありません'
+outOfDay: '日付が範囲外です'
+
+commands:
+    create-shift:
+        description: 'シフトを作成'
+        messages:
+            timeFormat: '時間形式は 10 桁 (yyyyMMddHH) / 12 桁 (yyyyMMddHHmm) / 14 桁 (yyyyMMddHHmmss) である必要があります'
+            success: 'シフト「{name}」が作成され、このグループに紐付けられました'
+    remove-shift:
+        description: 'シフトを削除'
+        messages:
+            noShift: '「{name}」という名前のシフトは存在しません'
+            success: 'シフト「{name}」を削除しました'
+    add-shift:
+        description: 'シフト枠を追加'
+        messages:
+            conflict: 'この時間帯にはシフトを入れられません。内容をご確認ください'
+            success: '追加しました: {day}日目 {person} {startHour}-{endHour}'
+    del-shift:
+        description: 'シフト枠を削除'
+        messages:
+            success: '削除しました: {day}日目 {person} {startHour}-{endHour}'
+    exchange-shift:
+        description: 'シフト枠を入れ替え'
+        messages:
+            success: '交代完了: {day}日目 {startHour}-{endHour} {oldName}→{newName}'
+    set-runner:
+        description: 'シフトのランナー役割を設定'
+        messages:
+            invalidRanking: '無効なランクです。選択可能な値: {validRankings}'
+            success: '{name} のランクを {ranking} に設定しました'
+    del-runner:
+        description: 'シフトのランナー役割を削除'
+        messages:
+            success: '{name} のランク情報を削除しました'
+    show-shift-left:
+        description: '残り枠'
+        messages:
+            success: '残り枠<br/>{ranges}'
+    share-shift:
+        description: 'シフトの管理権限を共有'
+        messages:
+            noShift: '「{shift_name}」という名前のシフトは存在しません'
+            success: 'グループ {group_gid} にシフト「{shift_name}」の管理権限を付与しました'
+    shift-group-ls:
+        description: 'シフトの管理グループ一覧'
+        messages:
+            noShift: '「{shift_name}」という名前のシフトは存在しません'
+            noGroups: '紐付けられているグループはありません'
+    revoke-shift:
+        description: 'シフト管理権限を取り消す'
+        messages:
+            success: 'グループ {group_gid} のシフト「{shift_name}」に対する管理権限を解除しました'
+    set-shift-color:
+        description: 'シフトの色を設定'
+        messages:
+            invalidColor: '色は次のいずれかである必要があります: {validColors}'
+            success: '色を設定しました: {start}-{end} {color}'
+    interval-speed-on:
+        description: '車速定時プッシュを有効化'
+        messages:
+            notInChannel: 'このコマンドはグループ内で使用してください'
+            alreadyOn: 'すでにプッシュが有効になっています。先に削除してください'
+            noMatchServer: 'エラー: サーバー名がどのサーバーにも一致しません'
+            noEvent: '現在、このサーバーでは開催中のイベントがありません'
+            success: 'プッシュを有効化しました: サーバー: {server} 追跡プレイヤー: {player}'
+    interval-speed-off:
+        description: '車速定時プッシュを無効化'
+        messages:
+            notInChannel: 'このコマンドはグループ内で使用してください'
+            success: 'プッシュを無効化しました'

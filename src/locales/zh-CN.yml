@@ -1,0 +1,75 @@
+permission-denied: '权限不足'
+lack: '缺少参数: {params}'
+noGroups: '当前群/服务器未绑定任何班表'
+notManager: '当前群/服务器无该表的所有权'
+outOfDay: '日期超出范围'
+
+commands:
+    create-shift:
+        description: '创建班表'
+        messages:
+            timeFormat: '时间格式必须是 10 位 (yyyyMMddHH) / 12 位 (yyyyMMddHHmm) / 14 位 (yyyyMMddHHmmss)'
+            success: '班表「{name}」已创建并绑定到本群'
+    remove-shift:
+        description: '移除班表'
+        messages:
+            noShift: '没有名为「{name}」的班表'
+            success: '班表「{name}」已成功删除'
+    add-shift:
+        description: '添加排班'
+        messages:
+            conflict: '该时间段无法完成排班，请检查'
+            success: '添加成功: 第{day}天 {person} {startHour}-{endHour}'
+    del-shift:
+        description: '删除排班'
+        messages:
+            success: '已删除: 第{day}天 {person} {startHour}-{endHour}'
+    exchange-shift:
+        description: '替换排班'
+        messages:
+            success: '已替换: 第{day}天 {startHour}-{endHour} {oldName}→{newName}'
+    set-runner:
+        description: '设置班表runner身份组'
+        messages:
+            invalidRanking: '身份组无效，可选值: {validRankings}'
+            success: '{name} 的身份组已设置为 {ranking}'
+    del-runner:
+        description: '删除班表runner身份组'
+        messages:
+            success: '{name} 的身份组已删除'
+    show-shift-left:
+        description: '班表剩余情况'
+        messages:
+            success: '班表情况<br/>{ranges}'
+    share-shift:
+        description: '分享班表的管理权限'
+        messages:
+            noShift: '没有名为「{shift_name}」的班表'
+            success: '已授权群 {group_gid} 管理表「{shift_name}」'
+    shift-group-ls:
+        description: '列出某班表的管理员群聊'
+        messages:
+            noShift: '没有名为「{shift_name}」的班表'
+            noGroups: '暂无绑定群'
+    revoke-shift:
+        description: '撤销班表管理权限'
+        messages:
+            success: '已撤销群 {group_gid} 对班表「{shift_name}」的管理权限'
+    set-shift-color:
+        description: '设置班表涂色'
+        messages:
+            invalidColor: '颜色必须是: {validColors}'
+            success: '已设置颜色: {start}-{end} {color}'
+    interval-speed-on:
+        description: '开启车速定时推送'
+        messages:
+            notInChannel: '请在群组中使用该指令'
+            alreadyOn: '当前已开启推送，请先删除'
+            noMatchServer: '错误: 服务器名未能匹配任何服务器'
+            noEvent: '当前服务器无进行中的活动'
+            success: '已开启推送: 服务器: {server} 追踪玩家: {player}'
+    interval-speed-off:
+        description: '关闭车速定时推送'
+        messages:
+            notInChannel: '请在群组中使用该指令'
+            success: '已关闭推送'
