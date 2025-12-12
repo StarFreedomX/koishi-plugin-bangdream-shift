@@ -10,6 +10,7 @@ shiftTable初始化时提供startTs: number, endTs: number, timezone: string = '
 删除方法removeShift(day: number, startHour: number, endHour: number, person: string): number[]
  */
 import { Context } from "koishi";
+import * as fs from "node:fs";
 
 export type HourColor = 'none' | 'black' | 'gray' | 'invalid';
 type ranking = 'main' | '10' | '50' | '100' | '1000';
@@ -23,10 +24,10 @@ const runnerColor = {
     '1000': '#79FA67',
 }
 const shiftColor = {
-    'start': '#B0E0FF',
+    'start': '#F0FFFF',
     'running': '#FFFFF0',
-    'end': '#FFE0E0',
-    'oneHour': '#E0FFE0',
+    'end': '#FFE4E1',
+    'oneHour': '#F0FFF0',
 }
 const symbolMap: Record<string, string> = {
     "main": "★",
@@ -499,7 +500,7 @@ ${this.renderShiftExchangeHTML(dayIndex)}
         return ctx.puppeteer.render(html);
     }
 
-    renderDay(dayIndex: number): string {
+    renderShiftHTML(dayIndex: number): string {
         if (dayIndex < 0 || dayIndex >= this._days) {
             throw new Error(`Day ${dayIndex} out of range`);
         }
@@ -625,7 +626,7 @@ ${this.renderShiftExchangeHTML(dayIndex)}
     }
 
 
-    async renderHTML(ctx: Context, dayIndex: number) {
+    async renderShiftImage(ctx: Context, dayIndex: number) {
         return ctx.puppeteer.render(`
 <html>
 <head>
@@ -643,18 +644,17 @@ ${this.renderShiftExchangeHTML(dayIndex)}
 </style>
 </head>
 <body>
-  ${this.renderDay(dayIndex)}
+  ${this.renderShiftHTML(dayIndex)}
 </body>
 </html>
 `)
     }
 }
 
+
 /*
 
-const start = new Date('2025-11-11 14:00:00').getTime();
-const end = new Date('2025-11-13 20:00:00').getTime();
-const shiftTable = new ShiftTable(start, end);
+const shiftTable = new ShiftTable('202511111400', '202511132000');
 
 shiftTable.setRanking('Main', 'main')
 shiftTable.setRanking('Alice', '10')
@@ -675,9 +675,11 @@ shiftTable.setShiftColor(1, 4, 6, 'black');
 // console.dir(shiftTable.exportSchedule(), {depth: null})
 // console.dir(shiftTable, {depth: null})
 // console.log(shiftTable.renderDay(0));
-fs.writeFileSync('test.html', shiftTable.renderShiftExchangeHTML(0))
+fs.writeFileSync('test.html', shiftTable.renderShiftHTML(0))
+// fs.writeFileSync('test.html', shiftTable.renderShiftExchangeHTML(0))
 // console.log(shiftTable.getPersons(0, 14));
 // console.log(shiftTable.getPersons(0, 17));
 // console.log(shiftTable.getShiftExchange(0, 15));
-
 */
+
+

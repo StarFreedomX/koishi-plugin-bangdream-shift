@@ -340,7 +340,7 @@ export async function apply(ctx: Context, cfg: Config) {
                 if (day <= 0 || day > row.shiftTable.days) return session.text('outOfDay');
 
                 // puppeteer 截图
-                return await row.shiftTable.renderHTML(ctx, day - 1)
+                return await row.shiftTable.renderShiftImage(ctx, day - 1)
             });
 
         ctx.command('show-shift-exchange <day:number> 天数，从1开始计')
