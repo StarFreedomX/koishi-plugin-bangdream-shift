@@ -37,6 +37,14 @@ commands:
         description: '删除班表runner身份组'
         messages:
             success: '{name} 的身份组已删除'
+    ls-shift:
+        description: '列出当前群可管理的班表'
+    set-shift-ending:
+        description: '修改班表结束时间'
+    show-shift:
+        description: '展示班表'
+    show-shift-exchange:
+        description: '展示交换表'
     show-shift-left:
         description: '班表剩余情况'
         messages:
@@ -51,6 +59,8 @@ commands:
         messages:
             noShift: '没有名为「{shift_name}」的班表'
             noGroups: '暂无绑定群'
+    switch-shift:
+        description: '切换班表'
     revoke-shift:
         description: '撤销班表管理权限'
         messages:

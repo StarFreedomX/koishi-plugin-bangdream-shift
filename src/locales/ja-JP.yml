@@ -37,6 +37,14 @@ commands:
         description: 'シフトのランナー役割を削除'
         messages:
             success: '{name} のランク情報を削除しました'
+    ls-shift:
+        description: '現在のグループで管理可能なシフトを一覧表示'
+    set-shift-ending:
+        description: 'シフトの終了時間を変更'
+    show-shift:
+        description: 'シフトを表示'
+    show-shift-exchange:
+        description: '交代表を表示'
     show-shift-left:
         description: '残り枠'
         messages:
@@ -51,6 +59,8 @@ commands:
         messages:
             noShift: '「{shift_name}」という名前のシフトは存在しません'
             noGroups: '紐付けられているグループはありません'
+    switch-shift:
+        description: 'シフトを切り替える'
     revoke-shift:
         description: 'シフト管理権限を取り消す'
         messages:
