@@ -99,8 +99,8 @@ export async function apply(ctx: Context, cfg: Config) {
             .usage('create-shift 315真里歌 20251210150000 20251219205959')
             .action(async ({ session }, name, start, end) => {
                 if (!await canGrant(session)) return session.text('permission-denied');
-                if (!start || !end) return session.text('lack', {param: 'start/end'});
-                if (!name) return session.text('lack', {param: 'name'});
+                if (!start || !end) return session.text('lack', { params: 'start/end' });
+                if (!name) return session.text('lack', { params: 'name' });
 
                 let startTs: string,endTs: string;
                 try {
@@ -138,7 +138,7 @@ export async function apply(ctx: Context, cfg: Config) {
 
         ctx.command('remove-shift <name:string>')
             .action(async ({ session }, name) => {
-                if (!name) return session.text('lack', {param: 'name'});
+                if (!name) return session.text('lack', { params: 'name' });
 
                 // 查找班表
                 const table = await ctx.database.get('bangdream_shift', { name })
@@ -164,7 +164,7 @@ export async function apply(ctx: Context, cfg: Config) {
         ctx.command('set-shift-ending <end:string> 结束时间>')
             .action(async ({ session }, end) => {
                 if (!await canGrant(session)) return session.text('permission-denied');
-                if (!end) return session.text('lack', {param: 'start/end'});
+                if (!end) return session.text('lack', { params: 'start/end' });
                 const curr = await getCurrentShift(ctx, getGid(session))
                 if (!curr) return session.text('noGroups');
                 let endTs: string;
@@ -294,7 +294,7 @@ export async function apply(ctx: Context, cfg: Config) {
         ctx.command('set-runner <name:string> <ranking:string>', '设置人员身份')
             .action(async ({ session }, name, ranking) => {
                 if (!await canGrant(session)) return session.text('permission-denied');
-                if (!name || !ranking) return session.text('lack',{ param: 'name/ranking' });
+                if (!name || !ranking) return session.text('lack',{ params: 'name/ranking' });
                 const validRankings = ['main', '10', '50', '100', '1000'];
                 if (!validRankings.includes(ranking)) return session.text('.invalidRanking', { validRankings: validRankings.join(',') });
 
@@ -314,7 +314,7 @@ export async function apply(ctx: Context, cfg: Config) {
         ctx.command('del-runner <name:string>', '删除人员身份')
             .action(async ({ session }, name) => {
                 if (!await canGrant(session)) return session.text('permission-denied');
-                if (!name) return session.text('lack',{ param: 'name' });
+                if (!name) return session.text('lack',{ params: 'name' });
 
                 const curr = await getCurrentShift(ctx, getGid(session))
                 if (!curr) return session.text('noGroups');
@@ -331,7 +331,7 @@ export async function apply(ctx: Context, cfg: Config) {
         //返回图片
         ctx.command('show-shift <day:number> 天数，从1开始计')
             .action(async ({ session }, day) => {
-                if (!day) return session.text('lack', { param: 'day' });
+                if (!day) return session.text('lack', { params: 'day' });
 
                 const curr = await getCurrentShift(ctx, getGid(session))
                 if (!curr) return session.text('noGroups');
@@ -345,7 +345,7 @@ export async function apply(ctx: Context, cfg: Config) {
 
         ctx.command('show-shift-exchange <day:number> 天数，从1开始计')
             .action(async ({ session }, day) => {
-                if (!day) return session.text('lack', { param: 'day' });
+                if (!day) return session.text('lack', { params: 'day' });
 
                 const curr = await getCurrentShift(ctx, getGid(session))
                 if (!curr) return session.text('noGroups');
@@ -371,7 +371,7 @@ export async function apply(ctx: Context, cfg: Config) {
          */
         ctx.command('show-shift-left <day:number> 天数，从1开始计')
             .action(async ({ session }, day) => {
-                if (!day) return session.text('lack', { param: 'day' });
+                if (!day) return session.text('lack', { params: 'day' });
 
                 const curr = await getCurrentShift(ctx, getGid(session))
                 if (!curr) return session.text('noGroups');
@@ -408,7 +408,7 @@ export async function apply(ctx: Context, cfg: Config) {
             .action(async ({ session }, shift_name, group_gid) => {
 
                 if (!await canGrant(session)) return session.text('permission-denied');
-                if (!shift_name || !group_gid) return session.text('lack', { param: 'shift_name/group_gid' });
+                if (!shift_name || !group_gid) return session.text('lack', { params: 'shift_name/group_gid' });
                 const shift = await ctx.database.get('bangdream_shift', { name: shift_name })
                 if (!shift[0]) return session.text('.noShift', { shift_name });
                 const shift_id = shift[0].id
@@ -465,9 +465,9 @@ export async function apply(ctx: Context, cfg: Config) {
                 const validColors: HourColor[] = ['none', 'gray', 'black', 'invalid']
 
                 // 参数检查
-                if (!day) return session.text('lack', { param: 'day' });
-                if (start == null || end == null) return session.text('lack', { param: 'start/end' });
-                if (!color) return session.text('lack', { param: 'color' });
+                if (!day) return session.text('lack', { params: 'day' });
+                if (start == null || end == null) return session.text('lack', { params: 'start/end' });
+                if (!color) return session.text('lack', { params: 'color' });
 
                 // 颜色校验
                 if (!validColors.includes(color as HourColor)) {
