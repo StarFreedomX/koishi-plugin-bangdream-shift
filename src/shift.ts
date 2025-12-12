@@ -182,41 +182,44 @@ export class ShiftTable {
         this.member_table[name] = ranking;
     }
 
-
     /**
-     * 添加班表人员
-     * @param dayIndex 第几天的班表
-     * @param startHour 上班时刻
-     * @param endHour 下班时刻
-     * @param person 人名
-     * @return 操作是否成功，成功为true，失败为false
+     * 添加班表人员（返回成功/失败小时列表）
      */
-    addShift(dayIndex: number, startHour: number, endHour: number, person: string): boolean {
+    addShift(dayIndex: number, startHour: number, endHour: number, person: string): { success: number[], failed: number[] } {
         const hours = this.normalizeHour(dayIndex, startHour, endHour);
         if (!hours?.length) {
-            console.warn(`存在不支持的时间段，已取消插入`);
-            return false;
+            return {
+                success: [],
+                failed: [],
+            };
         }
-        const d = this.shift_table[dayIndex];
 
-        // 预检查
-        for (let h of hours) {
-            if (d[h].persons.indexOf(null) === -1) {
-                // 有任何小时满员 → 直接拒绝，不修改原数据
-                console.warn(`第 ${dayIndex} 天 ${h} 小时已满 5 个位置，放弃整个插入`);
-                return false;
-            }
-        }
+        const d = this.shift_table[dayIndex];
+        const success: number[] = [];
+        const failed: number[] = [];
 
         for (let h of hours) {
             const idx = d[h].persons.indexOf(null);
+
+            // 已满 / 存在同一人 → 放入 failed
+            if (idx === -1 || d[h].persons.includes(person)) {
+                failed.push(h);
+                continue;
+            }
+
+            // 可以添加
             d[h].persons[idx] = person;
+            success.push(h);
         }
 
-        // 调整轨道
-        this.adjustDay(dayIndex);
-        return true; // 返回成功
+        // 有成功才调整轨道
+        if (success.length) {
+            this.adjustDay(dayIndex);
+        }
+
+        return { success, failed };
     }
+
 
     /**
      * 删除班表人员（删除指定时间段内的该人员信息）
@@ -226,7 +229,7 @@ export class ShiftTable {
      * @param person 人名
      * @return 返回该人员被删除的所有小时列表
      */
-    removeShift(dayIndex: number, startHour: number, endHour: number, person: string): number[] {
+    delShift(dayIndex: number, startHour: number, endHour: number, person: string): number[] {
         const hours = this.normalizeHour(dayIndex, startHour, endHour);
         const d = this.shift_table[dayIndex];
         const removedHours: number[] = [];
@@ -239,6 +242,92 @@ export class ShiftTable {
             }
         }
         return removedHours;
+    }
+
+    /**
+     * 批量替换班表人员（区分成功和失败）
+     * @param dayIndex 第几天（0开始）
+     * @param startHour 开始小时
+     * @param endHour 结束小时
+     * @param fromPerson 被替换的人
+     * @param toPerson 替换成的人
+     * @returns { success: number[], failed: number[] } 成功/失败的小时列表
+     */
+    exchangeShift(dayIndex: number, startHour: number, endHour: number, fromPerson: string, toPerson: string): { success: number[], failed: number[] } {
+        const hours = this.normalizeHour(dayIndex, startHour, endHour);
+        if (!hours?.length) return { success: [], failed: [] };
+
+        const d = this.shift_table[dayIndex];
+        const success: number[] = [];
+        const failed: number[] = [];
+
+        for (const h of hours) {
+            const fromIndices = d[h].persons
+                .map((p, idx) => p === fromPerson ? idx : -1)
+                .filter(idx => idx !== -1);
+
+            if (!fromIndices.length) continue;
+
+            for (const idx of fromIndices) {
+                // 检查目标是否已经有 toPerson
+                if (d[h].persons.includes(toPerson)) {
+                    failed.push(h);
+                } else {
+                    d[h].persons[idx] = toPerson;
+                    success.push(h);
+                }
+            }
+        }
+
+        if (success.length) this.adjustDay(dayIndex);
+
+        return { success, failed };
+    }
+
+
+
+    /**
+     * 将班表中所有出现 oldName 的地方改成 newName
+     * @param oldName 旧名字
+     * @param newName 新名字
+     */
+    renamePerson(oldName: string, newName: string) {
+        if (!oldName || !newName || oldName === newName) return;
+
+        // shift_table：所有天、所有小时的人员替换
+        for (let d = 0; d < this._days; d++) {
+            const dayTable = this.shift_table[d];
+            for (let h = 0; h < 24; h++) {
+                const persons = dayTable[h].persons;
+                for (let i = 0; i < persons.length; i++) {
+                    if (persons[i] === oldName) {
+                        persons[i] = newName;
+                    }
+                }
+            }
+        }
+
+        // member_table
+        if (this.member_table[oldName]) {
+            this.member_table[newName] = this.member_table[oldName];
+            delete this.member_table[oldName];
+        }
+
+        // shiftExchange
+        if (this.shiftExchange) {
+            for (let d = 0; d < this.shiftExchange.length; d++) {
+                const day = this.shiftExchange[d];
+                if (!day) continue;
+
+                for (const record of day) {
+                    record.onDuty = record.onDuty.map(n => n === oldName ? newName : n);
+                    record.offDuty = record.offDuty.map(n => n === oldName ? newName : n);
+                }
+            }
+        }
+
+        // 重新调整轨道
+        this.adjustAllDays();
     }
 
 
@@ -357,8 +446,6 @@ export class ShiftTable {
         this.markInvalidHours();
     }
 
-
-
     /**
      * 调整整天班表轨道，保证同一人连续段保持同一列
      * @param dayIndex 天数
@@ -386,7 +473,6 @@ export class ShiftTable {
     adjustAllDays() {
         this.shift_table.forEach((_, day) => this.adjustDay(day));
     }
-
 
     // 生成整个班表的 shiftExchange
     generateShiftExchange() {
@@ -624,7 +710,6 @@ ${this.renderShiftExchangeHTML(dayIndex)}
         html += `</table>`;
         return html;
     }
-
 
     async renderShiftImage(ctx: Context, dayIndex: number) {
         return ctx.puppeteer.render(`

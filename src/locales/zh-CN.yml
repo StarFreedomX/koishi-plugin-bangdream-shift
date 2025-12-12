@@ -1,7 +1,7 @@
 permission-denied: '权限不足'
 lack: '缺少参数: {params}'
 noGroups: '当前群/服务器未绑定任何班表'
-notManager: '当前群/服务器无该表的所有权'
+notOwner: '当前群/服务器无该表的所有权'
 outOfDay: '日期超出范围'
 
 commands:
@@ -18,16 +18,27 @@ commands:
     add-shift:
         description: '添加排班'
         messages:
-            conflict: '该时间段无法完成排班，请检查'
-            success: '添加成功: 第{day}天 {person} {startHour}-{endHour}'
+            conflict: '该时间段无法添加排班，请检查'
+            success: '已添加以下排班：<br/>{day}日 {person} {hourRange}'
+            fail: '以下时间段已经输入过，或时间段已满:<br/>{day}日 {person} {hourRange}'
+            errorTime: '无法解析时间段，请检查参数'
     del-shift:
         description: '删除排班'
         messages:
-            success: '已删除: 第{day}天 {person} {startHour}-{endHour}'
+            success: '已删除<br/> 第{day}天 {person} {hourRange}'
+            fail: '失败: 以下时间段中无该玩家排班<br/> 第{day}天 {person} {hourRange}'
+            errorTime: '无法解析时间段，请检查参数'
     exchange-shift:
         description: '替换排班'
         messages:
-            success: '已替换: 第{day}天 {startHour}-{endHour} {oldName}→{newName}'
+            success: '已替换<br/> 第{day}天 {fromPerson} → {toPerson} {hourRange}'
+            fail: '替换玩家以下时间段已经在表中，无法进行替换:<br/> 第{day}天 {toPerson} {hourRange}'
+            errorTime: '无法解析时间段，请检查参数'
+            noShift: '时间段无该玩家排班，请检查参数'
+    rename-shift:
+        description: '重命名玩家'
+        messages:
+            success: '重命名完成: {oldName} → {newName}'
     set-runner:
         description: '设置班表runner身份组'
         messages:
@@ -43,14 +54,18 @@ commands:
         description: '修改班表结束时间'
     show-shift:
         description: '展示班表'
+        messages:
+            success: '第{day}天班表的状况如下'
     show-shift-exchange:
         description: '展示交换表'
+        messages:
+            success: '第{day}天交换表的状况如下'
     show-shift-left:
         description: '班表剩余情况'
         messages:
             success: '班表情况<br/>{ranges}'
     share-shift:
-        description: '分享班表的管理权限'
+        description: '共享班表的管理权限'
         messages:
             noShift: '没有名为「{shift_name}」的班表'
             success: '已授权群 {group_gid} 管理表「{shift_name}」'
@@ -61,6 +76,9 @@ commands:
             noGroups: '暂无绑定群'
     switch-shift:
         description: '切换班表'
+        messages:
+            noShift: '没有名为「{name}」的班表'
+            success: '已切换到班表 "{name}"'
     revoke-shift:
         description: '撤销班表管理权限'
         messages:

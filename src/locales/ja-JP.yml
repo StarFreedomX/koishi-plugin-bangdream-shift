@@ -19,15 +19,26 @@ commands:
         description: 'シフト枠を追加'
         messages:
             conflict: 'この時間帯にはシフトを入れられません。内容をご確認ください'
-            success: '追加しました: {day}日目 {person} {startHour}-{endHour}'
+            success: '下記のシフトを追加しました: <br/>{day}日目 {person} {hourRange}'
+            fail: '下記の時間帯はすでに入力済みであるか、枠が埋まっています: <br/>{day}日目 {person} {hourRange}'
+            errorTime: '時間帯を解析できません。パラメータを確認してください'
     del-shift:
         description: 'シフト枠を削除'
         messages:
-            success: '削除しました: {day}日目 {person} {startHour}-{endHour}'
+            success: '削除しました<br/> {day}日目 {person} {hourRange}'
+            fail: '失敗: 以下の時間帯に対象プレイヤーのシフトはありません<br/> {day}日目 {person} {hourRange}'
+            errorTime: '時間帯を解析できません。パラメータを確認してください'
     exchange-shift:
         description: 'シフト枠を入れ替え'
         messages:
-            success: '交代完了: {day}日目 {startHour}-{endHour} {oldName}→{newName}'
+            success: '置き換えました<br/> {day}日目 {fromPerson} → {toPerson} {hourRange}'
+            fail: '置き換え対象のプレイヤーが以下の時間帯ですでにシフトに入っているため、置き換えできません:<br/> {day}日目 {toPerson} {hourRange}'
+            noShift: '指定した時間帯に対象プレイヤーのシフトがありません。パラメータを確認してください'
+            errorTime: '時間帯を解析できません。パラメータを確認してください'
+    rename-shift:
+        description: 'プレイヤーの名前を変更する'
+        messages:
+            success: '名前の変更が完了しました: {oldName} → {newName}'
     set-runner:
         description: 'シフトのランナー役割を設定'
         messages:
@@ -43,8 +54,12 @@ commands:
         description: 'シフトの終了時間を変更'
     show-shift:
         description: 'シフトを表示'
+        messages:
+            success: '{day}日目の現在のシフト状況です'
     show-shift-exchange:
         description: '交代表を表示'
+        messages:
+            success: '{day}日目の現在の交代表状況です'
     show-shift-left:
         description: '残り枠'
         messages:
@@ -61,6 +76,9 @@ commands:
             noGroups: '紐付けられているグループはありません'
     switch-shift:
         description: 'シフトを切り替える'
+        messages:
+            noShift: '「{name}」という名前のシフトは存在しません'
+            success: 'シフト「{name}」に切り替えました'
     revoke-shift:
         description: 'シフト管理権限を取り消す'
         messages:

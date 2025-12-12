@@ -1,4 +1,4 @@
-import {Context, Schema, Session} from 'koishi'
+import {Context, Schema, Session, Logger, h} from 'koishi'
 import * as utils from "./utils";
 import {HourColor, ShiftTable} from "./shift";
 import {} from 'koishi-plugin-puppeteer'
@@ -6,6 +6,7 @@ import {} from '@koishijs/plugin-adapter-discord'
 
 export const name = 'bangdream-shift'
 export const using = ['puppeteer','database'] as const
+export const bdShiftLogger: Logger = new Logger("bangdream-shift");
 
 
 export const inject = ['database'];
@@ -27,7 +28,7 @@ export interface bangdream_shift_group{
     gid: string,
     shift_id: number,
     using: boolean,
-    is_manager: boolean,
+    is_owner: boolean,
 }
 
 export interface bangdream_speed_tracker {
@@ -84,7 +85,10 @@ export async function apply(ctx: Context, cfg: Config) {
         gid: 'string',
         shift_id: 'unsigned',
         using: 'boolean',
-        is_manager: 'boolean'
+        is_owner: {
+            type: 'boolean',
+            legacy: ['is_manager'],
+        }
     }, {primary: ['gid', 'shift_id']});
 
     ctx.model.extend('bangdream_speed_tracker', {
@@ -95,9 +99,9 @@ export async function apply(ctx: Context, cfg: Config) {
     //班表功能
     if (cfg.openShift){
         // 创建班表，名字不能和已有的重复
-        ctx.command('create-shift <name:string> 班表名称 <start:string> 开始时间 <end:string> 结束时间')
-            .usage('create-shift 315真里歌 20251210150000 20251219205959')
+        ctx.command('create-shift <name:string> <start:string> <end:string>')
             .action(async ({ session }, name, start, end) => {
+                bdShiftLogger.info(session.userId, 'try to create shift: ', name, start, end);
                 if (!await canGrant(session)) return session.text('permission-denied');
                 if (!start || !end) return session.text('lack', { params: 'start/end' });
                 if (!name) return session.text('lack', { params: 'name' });
@@ -105,7 +109,7 @@ export async function apply(ctx: Context, cfg: Config) {
                 let startTs: string,endTs: string;
                 try {
                     const nearestStart = roundToNearestHour(start);
-                    const nearestEnd   = roundToNearestHour(end);  // 最终结束时间是整点前1ms
+                    const nearestEnd   = roundToNearestHour(end);
                     [startTs, endTs] = [nearestStart, nearestEnd]
                 }catch (e) {
                     if(e.message === 'Invalid Time Format'){
@@ -130,7 +134,7 @@ export async function apply(ctx: Context, cfg: Config) {
                     gid: getGid(session),
                     shift_id: bangdream_shift.id,
                     using: true,
-                    is_manager: true,
+                    is_owner: true,
                 })
 
                 return session.text('.success',{ name: name })
@@ -138,6 +142,7 @@ export async function apply(ctx: Context, cfg: Config) {
 
         ctx.command('remove-shift <name:string>')
             .action(async ({ session }, name) => {
+                bdShiftLogger.info(session.userId, 'try to remove shift: ', name);
                 if (!name) return session.text('lack', { params: 'name' });
 
                 // 查找班表
@@ -146,7 +151,11 @@ export async function apply(ctx: Context, cfg: Config) {
                     return session.text('.noShift');
                 }
 
-                const shift = table[0]
+                const shift = table[0];
+
+                // 当前群必须是 owner 才能删除
+                if (!await isShiftOwner(ctx, getGid(session), shift.id))
+                    return session.text('notOwner')
 
                 // 删除引用该班表的 bangdream_shift_group
                 await ctx.database.remove('bangdream_shift_group', {
@@ -161,8 +170,9 @@ export async function apply(ctx: Context, cfg: Config) {
                 return session.text('.success', { name: name })
             });
 
-        ctx.command('set-shift-ending <end:string> 结束时间>')
+        ctx.command('set-shift-ending <end:string>')
             .action(async ({ session }, end) => {
+                bdShiftLogger.info(session.userId, 'try to set shift ending: ', end);
                 if (!await canGrant(session)) return session.text('permission-denied');
                 if (!end) return session.text('lack', { params: 'start/end' });
                 const curr = await getCurrentShift(ctx, getGid(session))
@@ -181,8 +191,9 @@ export async function apply(ctx: Context, cfg: Config) {
                 return session.text('.success', { name: name })
             });
 
-        ctx.command('ls-shift')
+        ctx.command('ls-shift <test:string>')
             .action(async ({ session }) => {
+                bdShiftLogger.info(session.userId, 'try to list shift');
                 if (!await canGrant(session)) return session.text('permission-denied');
 
 
@@ -203,8 +214,9 @@ export async function apply(ctx: Context, cfg: Config) {
 
         ctx.command('switch-shift <name:string>')
             .action(async ({ session }, name) => {
+                bdShiftLogger.info(session.userId, 'try to switch to shift: ', name);
                 if (!await canGrant(session)) return session.text('permission-denied');
-                if (!name) return '请提供班表名！'
+                if (!name) return session.text('lack', { params: 'name' });
 
                 // 查询该群所有班表
                 const groupShift = await ctx.database.get('bangdream_shift_group', { gid: getGid(session) })
@@ -213,86 +225,188 @@ export async function apply(ctx: Context, cfg: Config) {
                 // 查询班表id
                 const shift = await ctx.database.get('bangdream_shift', { name })
                 const shift_id = shift.at(0)?.id;
-                if (!shift?.length || !groupShiftIds.includes(shift_id)) return `无法使用班表 ${name}`
+                if (!shift?.length || !groupShiftIds.includes(shift_id)) return session.text('.noShift', { name: name });
                 // 先把当前群的所有班表 using = false
                 await ctx.database.set('bangdream_shift_group', { gid: getGid(session) }, { using: false })
                 // 把指定班表设为使用中
                 await ctx.database.set('bangdream_shift_group', { gid: getGid(session), shift_id: shift_id }, { using: true })
 
-                return `已切换到班表 "${shift.at(0)?.name}"`
+                return session.text('.success', { name })
             })
 
+        ctx.command('add-shift <person:string> <day:number> <startHour:number> <endHour:number> [startHour2:number] [endHour2:number] [startHour3:number] [endHour3:number] [startHour4:number] [endHour4:number] [startHour5:number] [endHour5:number]')
+            .action(async ({ session }, person, day, startHour, endHour, startHour2, endHour2, startHour3, endHour3, startHour4, endHour4, startHour5, endHour5) => {
+                bdShiftLogger.info(session.userId, 'try to add shift: ', person, day,
+                    ...[[startHour, endHour],
+                    [startHour2, endHour2],
+                    [startHour3, endHour3],
+                    [startHour4, endHour4],
+                    [startHour5, endHour5]].filter(([s,t])=>s!==undefined || t!==undefined),
+                );
 
-        ctx.command('add-shift <person:string> 玩家名 <day:number> 天数，从1开始计 <startHour:number> 开始小时时刻 <endHour:number> 结束小时时刻')
-            .action(async ({ session }, person, day, startHour, endHour) => {
                 if (!await canGrant(session)) return session.text('permission-denied');
-                if (!person || !day || startHour === undefined || endHour === undefined) return session.text('缺少参数，用法：\nadd_shift <person:string> 玩家名 <day:number> 天数，从1开始计 <startHour:number> 开始小时时刻 <endHour:number> 结束小时时刻');
+                if (!person || !day || startHour === undefined || endHour === undefined) {
+                    return session.text('lack', { params: 'person/day/startHour/endHour' });
+                }
+
                 const curr = await getCurrentShift(ctx, getGid(session));
                 if (!curr) return session.text('noGroups');
-
-                if (!await isGroupManager(ctx, getGid(session), curr.shift_id))
-                    return session.text('notManager');
 
                 const row = await loadShift(ctx, curr.shift_id);
                 if (day <= 0 || day > row.shiftTable.days) return session.text('outOfDay');
 
-                const ok = row.shiftTable.addShift(day - 1, startHour, endHour, person)
+                // 收集所有时间段
+                const segments: [number, number][] = [
+                    [startHour, endHour],
+                    [startHour2, endHour2],
+                    [startHour3, endHour3],
+                    [startHour4, endHour4],
+                    [startHour5, endHour5],
+                ].filter(([s, e]) => s !== undefined && e !== undefined && s < e) as [number, number][];
+                if (!segments?.length) return session.text('.errorTime');
+                // 用于汇总成功/失败的小时
+                let allSuccess: number[] = [];
+                let allFailed: number[] = [];
 
-                await saveShift(ctx, row)
-
-                return ok ? session.text('.success', { person, day, startHour, endHour }) : session.text('.conflict')
-            });
-
-        ctx.command('del-shift <person:string> 人员姓名 <day:number> 天数，从1开始计 <startHour:number> 开始小时时刻 <endHour:number> 结束小时时刻')
-            .action(async ({ session }, person, day, startHour, endHour) => {
-                if (!await canGrant(session)) return session.text('permission-denied');
-                if (!person || !day || startHour === undefined || endHour === undefined) return session.text('缺少参数，用法：\ndel_shift <person:string> 玩家名 <day:number> 天数，从1开始计 <startHour:number> 开始小时时刻 <endHour:number> 结束小时时刻');
-                const curr = await getCurrentShift(ctx, getGid(session));
-                if (!curr) return session.text('noGroups');
-
-                if (!await isGroupManager(ctx, getGid(session), curr.shift_id))
-                    return session.text('notManager');
-
-                const row = await loadShift(ctx, curr.shift_id);
-                if (day <= 0 || day > row.shiftTable.days) return session.text('outOfDay');
-
-                // 删除逻辑
-                const hours = row.shiftTable.removeShift(
-                    day - 1, startHour, endHour, person
-                )
+                // 逐段插入
+                for (const [s, e] of segments) {
+                    const { success, failed } = row.shiftTable.addShift(day - 1, s, e, person);
+                    allSuccess.push(...success);
+                    allFailed.push(...failed);
+                }
 
                 await saveShift(ctx, row);
 
-                return session.text('.success', { person, day, startHour, endHour })
+                // 转成连续区间
+                const successRanges = hoursToRanges(allSuccess);
+                const failedRanges = hoursToRanges(allFailed);
+
+                const msg: string[] = [];
+
+                if (successRanges.length) {
+                    msg.push(session.text('.success', { day, person, hourRange: successRanges.join(' ') }));
+                }
+
+                if (failedRanges.length) {
+                    msg.push(session.text('.fail', { day, person, hourRange: failedRanges.join(' ') }));
+                }
+
+                return msg.length ? msg.join('\n') : session.text('.errorTime');
             });
 
-        ctx.command('exchange-shift <oldName:string> 被替换的人员名字 <newName:string> 进行替换的人员名字 <day:number> 天数，从1开始计 <start:number> 开始小时时刻 <end:number> 结束小时时刻')
-            .action(async ({ session }, oldName, newName, day, startHour, endHour) => {
-                if (!await canGrant(session)) return session.text('permission-denied');
-                const curr = await getCurrentShift(ctx, getGid(session))
-                if (!curr) return session.text('noGroups');
+        ctx.command('del-shift <person:string> <day:number> <startHour:number> <endHour:number> [startHour2:number] [endHour2:number] [startHour3:number] [endHour3:number] [startHour4:number] [endHour4:number] [startHour5:number] [endHour5:number]')
+            .action(async ({ session }, person, day, startHour, endHour, startHour2, endHour2, startHour3, endHour3, startHour4, endHour4, startHour5, endHour5) => {
 
-                if (!await isGroupManager(ctx, getGid(session), curr.shift_id))
-                    return session.text('notManager')
+                bdShiftLogger.info(session.userId, 'try to del shift: ', person, day,
+                    ...[[startHour, endHour],
+                        [startHour2, endHour2],
+                        [startHour3, endHour3],
+                        [startHour4, endHour4],
+                        [startHour5, endHour5]].filter(([s,t])=>s!==undefined || t!==undefined)
+                );
+
+                if (!await canGrant(session)) return session.text('permission-denied');
+                if (!person || !day || startHour === undefined || endHour === undefined) {
+                    return session.text('lack', { params: 'person/day/startHour/endHour' });
+                }
+
+                const curr = await getCurrentShift(ctx, getGid(session));
+                if (!curr) return session.text('noGroups');
 
                 const row = await loadShift(ctx, curr.shift_id);
                 if (day <= 0 || day > row.shiftTable.days) return session.text('outOfDay');
 
-                // 替换逻辑
-                const removed = row.shiftTable.removeShift(
-                    day - 1, startHour, endHour, oldName
-                )
-                removed.forEach(hour => {
-                    row.shiftTable.addShift(day - 1, hour, hour + 1, newName)
-                })
+                // 收集所有时间段
+                const segments: [number, number][] = [
+                    [startHour, endHour],
+                    [startHour2, endHour2],
+                    [startHour3, endHour3],
+                    [startHour4, endHour4],
+                    [startHour5, endHour5],
+                ].filter(([s, e]) => s < e && s !== undefined && e !== undefined) as [number, number][];
 
-                await saveShift(ctx, row)
+                if (!segments?.length) return session.text('.errorTime');
 
-                return session.text('.success', { day, startHour, endHour, oldName, newName })
+                const allRemoved = new Set<number>();
+
+                // 逐段删除
+                for (const [s, e] of segments) {
+                    const removed = row.shiftTable.delShift(day - 1, s, e, person);
+                    removed.forEach(h => allRemoved.add(h));
+                }
+
+                await saveShift(ctx, row);
+
+                const removedRanges = hoursToRanges([...allRemoved]);
+
+                if (!removedRanges.length) {
+                    return session.text('.fail', { person, day, hourRange: segments.map(([s, e]) => `${s}-${e}`).join(' ') });
+                }
+
+                return session.text('.success', { person, day, hourRange: removedRanges.join(' ') });
             });
 
-        ctx.command('set-runner <name:string> <ranking:string>', '设置人员身份')
+        ctx.command('exchange-shift <oldName:string> <newName:string> <day:number> <startHour:number> <endHour:number> [startHour2:number] [endHour2:number] [startHour3:number] [endHour3:number] [startHour4:number] [endHour4:number] [startHour5:number] [endHour5:number]')
+            .action(async ({ session }, oldName, newName, day, startHour, endHour, startHour2, endHour2, startHour3, endHour3, startHour4, endHour4, startHour5, endHour5) => {
+
+                bdShiftLogger.info(session.userId, 'try to exchange shift: ', oldName, newName, day,
+                    ...[[startHour, endHour],
+                        [startHour2, endHour2],
+                        [startHour3, endHour3],
+                        [startHour4, endHour4],
+                        [startHour5, endHour5]].filter(([s,t])=>s!==undefined || t!==undefined)
+                );
+
+                if (!await canGrant(session)) return session.text('permission-denied');
+
+                const curr = await getCurrentShift(ctx, getGid(session));
+                if (!curr) return session.text('noGroups');
+
+                const row = await loadShift(ctx, curr.shift_id);
+                if (day <= 0 || day > row.shiftTable.days) return session.text('outOfDay');
+
+                // 收集所有时间段
+                const segments: [number, number][] = [
+                    [startHour, endHour],
+                    [startHour2, endHour2],
+                    [startHour3, endHour3],
+                    [startHour4, endHour4],
+                    [startHour5, endHour5],
+                ].filter(([s, e]) => s !== undefined && e !== undefined && s < e) as [number, number][];
+                if (!segments?.length) return session.text('.errorTime');
+                // 用于汇总成功/失败的小时
+                let allSuccess: number[] = [];
+                let allFailed: number[] = [];
+
+                // 逐段替换
+                for (const [s, e] of segments) {
+                    const { success, failed } = row.shiftTable.exchangeShift(day - 1, s, e, oldName, newName);
+                    allSuccess.push(...success);
+                    allFailed.push(...failed);
+                }
+
+                await saveShift(ctx, row);
+
+                // 转成连续区间
+                const successRanges = hoursToRanges(allSuccess);
+                const failedRanges = hoursToRanges(allFailed);
+
+                const msg: string[] = [];
+
+                if (successRanges.length) {
+                    msg.push(session.text('.success', { day, fromPerson: oldName, toPerson: newName, hourRange: successRanges.join(' ') }));
+                }
+
+                if (failedRanges.length) {
+                    msg.push(session.text('.fail', { day, toPerson: newName, hourRange: failedRanges.join(' ') }));
+                }
+
+                return msg.length ? msg.join('\n') : session.text('.noShift');
+            });
+
+        ctx.command('set-runner <name:string> <ranking:string>')
             .action(async ({ session }, name, ranking) => {
+                bdShiftLogger.info(session.userId, 'try to set runner: ', name, ranking);
                 if (!await canGrant(session)) return session.text('permission-denied');
                 if (!name || !ranking) return session.text('lack',{ params: 'name/ranking' });
                 const validRankings = ['main', '10', '50', '100', '1000'];
@@ -300,8 +414,6 @@ export async function apply(ctx: Context, cfg: Config) {
 
                 const curr = await getCurrentShift(ctx, getGid(session))
                 if (!curr) return session.text('noGroups');
-                if (!await isGroupManager(ctx, getGid(session), curr.shift_id))
-                    return session.text('notManager')
 
                 const row = await loadShift(ctx, curr.shift_id)
                 row.shiftTable.setRanking(name, ranking as any);
@@ -311,15 +423,14 @@ export async function apply(ctx: Context, cfg: Config) {
                 return session.text('.success', { name,ranking });
             });
 
-        ctx.command('del-runner <name:string>', '删除人员身份')
+        ctx.command('del-runner <name:string>')
             .action(async ({ session }, name) => {
+                bdShiftLogger.info(session.userId, 'try to del runner: ', name);
                 if (!await canGrant(session)) return session.text('permission-denied');
                 if (!name) return session.text('lack',{ params: 'name' });
 
                 const curr = await getCurrentShift(ctx, getGid(session))
                 if (!curr) return session.text('noGroups');
-                if (!await isGroupManager(ctx, getGid(session), curr.shift_id))
-                    return session.text('notManager')
 
                 const row = await loadShift(ctx, curr.shift_id)
 
@@ -328,9 +439,26 @@ export async function apply(ctx: Context, cfg: Config) {
                 return session.text('.success', { name });
             });
 
-        //返回图片
-        ctx.command('show-shift <day:number> 天数，从1开始计')
+        ctx.command('rename-person <oldName:string> <newName:string>')
+            .action(async ({ session }, oldName, newName) => {
+                bdShiftLogger.info(session.userId, 'try to rename person: ', oldName, newName);
+                if (!await canGrant(session)) return session.text('permission-denied');
+                if (!oldName || !newName) return session.text('lack', { params: 'oldName/newName' });
+                const curr = await getCurrentShift(ctx, getGid(session));
+                if (!curr) return session.text('noGroups');
+
+                const row = await loadShift(ctx, curr.shift_id);
+
+                row.shiftTable.renamePerson(oldName, newName);
+
+                await saveShift(ctx, row)
+
+                return session.text('.success', { oldName, newName });
+            })
+
+        ctx.command('show-shift <day:number>')
             .action(async ({ session }, day) => {
+                bdShiftLogger.info(session.userId, 'try to show shift: ', day);
                 if (!day) return session.text('lack', { params: 'day' });
 
                 const curr = await getCurrentShift(ctx, getGid(session))
@@ -339,12 +467,17 @@ export async function apply(ctx: Context, cfg: Config) {
                 const row = await loadShift(ctx, curr.shift_id)
                 if (day <= 0 || day > row.shiftTable.days) return session.text('outOfDay');
 
+                const image = await row.shiftTable.renderShiftImage(ctx, day - 1);
+                console.log(image.slice(0,100))
                 // puppeteer 截图
-                return await row.shiftTable.renderShiftImage(ctx, day - 1)
+                return session.text('.success', {
+                    day: day,
+                }) + image;
             });
 
-        ctx.command('show-shift-exchange <day:number> 天数，从1开始计')
+        ctx.command('show-shift-exchange <day:number>')
             .action(async ({ session }, day) => {
+                bdShiftLogger.info(session.userId, 'try to show shift exchange: ', day);
                 if (!day) return session.text('lack', { params: 'day' });
 
                 const curr = await getCurrentShift(ctx, getGid(session))
@@ -354,23 +487,16 @@ export async function apply(ctx: Context, cfg: Config) {
                 if (day <= 0 || day > row.shiftTable.days) return session.text('outOfDay');
                 // puppeteer 截图
                 // console.dir(row.shiftTable.shiftExchange, {depth: null})
-                return await row.shiftTable.renderShiftExchangeImage(ctx, day - 1)
+                const image = await row.shiftTable.renderShiftExchangeImage(ctx, day - 1);
+                // puppeteer 截图
+                return session.text('.success', {
+                    day: day,
+                }) + image;
             });
 
-        /*
-        显示空缺人数，相邻小时如果缺的人数一样可以合并，返回如下格式的字符串
-        残り枠
-        3-6 @1
-        6-7 @2
-        7-9 @1
-        9-11 @3
-        11-12 @2
-        13-14 @1
-        17-20 @1
-        23-24 @1
-         */
-        ctx.command('show-shift-left <day:number> 天数，从1开始计')
+        ctx.command('show-shift-left <day:number>')
             .action(async ({ session }, day) => {
+                bdShiftLogger.info(session.userId, 'try to show shift left: ', day);
                 if (!day) return session.text('lack', { params: 'day' });
 
                 const curr = await getCurrentShift(ctx, getGid(session))
@@ -398,46 +524,42 @@ export async function apply(ctx: Context, cfg: Config) {
                 return session.text('.success', { ranges: ranges.join('\n') });
             });
 
-        ctx.command('shift-my-gid')
-            .action(async ({ session }) => {
-                return getGid(session);
-            })
-
-        ctx.command('share-shift <shift_name:string> 表的名字 <group_gid:string> 分享群组的gid')
+        ctx.command('share-shift <shift_name:string> <group_gid:string>')
             .userFields(['authority'])
             .action(async ({ session }, shift_name, group_gid) => {
-
+                bdShiftLogger.info(session.userId, 'try to share shift: ', shift_name, group_gid);
                 if (!await canGrant(session)) return session.text('permission-denied');
                 if (!shift_name || !group_gid) return session.text('lack', { params: 'shift_name/group_gid' });
                 const shift = await ctx.database.get('bangdream_shift', { name: shift_name })
-                if (!shift[0]) return session.text('.noShift', { shift_name });
+                if (!shift[0]) return session.text('.noShift', { shift_name: shift_name });
                 const shift_id = shift[0].id
 
-                // 当前群必须是 manager 才能授权
-                if (!await isGroupManager(ctx, getGid(session), shift_id))
-                    return session.text('notManager')
+                // 当前群必须是 owner 才能授权
+                if (!await isShiftOwner(ctx, getGid(session), shift_id))
+                    return session.text('notOwner')
 
                 // 给指定群绑定管理权限
                 await ctx.database.create('bangdream_shift_group', {
                     gid: group_gid,
                     shift_id,
                     using: false,
-                    is_manager: false,
+                    is_owner: false,
                 })
 
                 return session.text('.success', { group_gid, shift_name });
             });
 
-        // 列出可管理的群
-        ctx.command('shift-group-ls <shift_name:string> 班表名称')
+        // 列出某个班表的managers
+        ctx.command('shift-group-ls <shift_name:string>')
             .action(async ({ session }, shift_name) => {
+                bdShiftLogger.info(session.userId, 'try to list manager shift: ', shift_name);
                 if (!await canGrant(session)) return session.text('permission-denied');
                 const shift = await ctx.database.get('bangdream_shift', { name: shift_name })
                 if (!shift[0]) return session.text('.noShift', { shift_name });
                 const shift_id = shift[0].id
 
-                if (!await isGroupManager(ctx, getGid(session), shift_id))
-                    return session.text('notManager')
+                if (!await isShiftOwner(ctx, getGid(session), shift_id))
+                    return session.text('notOwner')
 
                 const groups = await ctx.database.get('bangdream_shift_group', { shift_id })
                 if (!groups.length) return session.text('.noGroups');
@@ -445,22 +567,24 @@ export async function apply(ctx: Context, cfg: Config) {
             })
 
         // 撤销某群管理权限
-        ctx.command('revoke-shift <shift_name:string> 班表名称 <group_gid:string> 群号')
+        ctx.command('revoke-shift <shift_name:string> <group_gid:string>')
             .action(async ({ session }, shift_name, group_gid) => {
+                bdShiftLogger.info(session.userId, 'try to revoke shift management: ', shift_name, group_gid);
                 if (!await canGrant(session)) return session.text('permission-denied');
                 const shift = await ctx.database.get('bangdream_shift', { name: shift_name })
                 if (!shift[0]) return session.text('.noShift', { shift_name });
                 const shift_id = shift[0].id
 
-                if (!await isGroupManager(ctx, getGid(session), shift_id))
-                    return session.text('notManager')
+                if (!await isShiftOwner(ctx, getGid(session), shift_id))
+                    return session.text('notOwner')
 
                 await ctx.database.remove('bangdream_shift_group', { gid: group_gid, shift_id })
                 return session.text('.success', { group_gid, shift_name })
             })
 
-        ctx.command('set-shift-color <day:number> 天数，从1开始计 <start:number> 开始小时时刻 <end:number> 结束小时时刻 <color:string> 颜色，可选none、gray和black')
+        ctx.command('set-shift-color <day:number> <start:number> <end:number> <color:string>')
             .action(async ({ session }, day, start, end, color:HourColor) => {
+                bdShiftLogger.info(session.userId, 'try to set shift color: ', day, start, end, color);
                 if (!await canGrant(session)) return session.text('permission-denied');
                 const validColors: HourColor[] = ['none', 'gray', 'black', 'invalid']
 
@@ -476,9 +600,6 @@ export async function apply(ctx: Context, cfg: Config) {
                 const curr = await getCurrentShift(ctx, getGid(session))
                 if (!curr) return session.text('noGroups')
 
-                if (!await isGroupManager(ctx, getGid(session), curr.shift_id))
-                    return session.text('notManager')
-
                 const row = await loadShift(ctx, curr.shift_id)
 
                 row.shiftTable.setShiftColor(
@@ -492,7 +613,6 @@ export async function apply(ctx: Context, cfg: Config) {
 
                 return session.text('.success', { start, end, color })
             });
-
 
     }
 
@@ -616,20 +736,22 @@ async function saveShift(ctx: Context, row: bangdream_shift) {
 }
 
 /**
- * 检查该群是否是该班表的 manager
+ * 检查该群是否是该班表的 owner
  */
-async function isGroupManager(ctx: Context, gid: string, shift_id: number) {
+async function isShiftOwner(ctx: Context, gid: string, shift_id: number) {
     const record = await ctx.database.get('bangdream_shift_group', {
         gid,
         shift_id,
     })
-    return record[0]?.is_manager ?? false
+    return record[0]?.is_owner ?? false
 }
 
 /**
- * 检查用户权限（用户 authority > 5 才能授权）
+ * 检查用户权限
  */
 async function canGrant(session) {
+    // 单人作用域不需要区分管理身份
+    if (!session.guildId) return true;
     // 获取 session.event.member.roles 和 session.author.roles
     const eventMemberRoles = session.event.member?.roles || [];
     const authorRoles = session.author.roles || [];
@@ -652,6 +774,7 @@ async function canGrant(session) {
 function getGid(session: Session) {
     return session.guild ? session.gid : session.uid
 }
+
 function roundToNearestHour (str: string): string {
     if (!/^\d{10}$/.test(str) && !/^\d{12}$/.test(str) && !/^\d{14}$/.test(str)) {
         throw new Error('Invalid Time Format')
@@ -686,4 +809,32 @@ function roundToNearestHour (str: string): string {
     const D = String(d.getDate()).padStart(2, "0");
 
     return `${Y}${M}${D}00`;
+}
+
+function hoursToRanges(hours: number[]): string[] {
+    if (!hours.length) return [];
+
+    hours = [...hours].sort((a, b) => a - b);
+    const result: string[] = [];
+
+    let start = hours[0];
+    let prev = hours[0];
+
+    for (let i = 1; i < hours.length; i++) {
+        const h = hours[i];
+        if (h === prev + 1) {
+            // 连续
+            prev = h;
+        } else {
+            // 输出前一段（结束小时 +1）
+            result.push(`${start}-${prev + 1}`);
+            start = h;
+            prev = h;
+        }
+    }
+
+    // 最后一段
+    result.push(`${start}-${prev + 1}`);
+
+    return result;
 }

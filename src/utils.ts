@@ -22,6 +22,7 @@ export function paresMessageList(list?: Array<Buffer | string>): Array<Element |
   }
   return messageList
 }
+
 export async function serverNameFuzzySearchResult(ctx: Context, config: Config, serverNameText: string): Promise<number> {
   const result = await getFuzzySearchResult(ctx, config, serverNameText);
   if (result && result['server']) {
@@ -29,11 +30,13 @@ export async function serverNameFuzzySearchResult(ctx: Context, config: Config, 
   }
   return -1;
 }
+
 export async function getFuzzySearchResult(ctx: Context, config: Config, text: string): Promise<object> {
   return await getDataFromBackend(`${config.backendUrl}/fuzzySearch`, {
     text
   }, ctx);
 }
+
 export async function getDataFromBackend(url: string, data: Object, ctx: Context): Promise<object> {
   const result = await ctx.http.post(url, data)
   if (result?.data?.status != 'success') {
@@ -125,6 +128,7 @@ function base64ToList(basd64List: Array<{ type: 'string' | 'base64', string: str
   }
   return result
 }
+
 export async function readJson(ctx: Context, url: string, retryTimes = 3) {
   do {
     try {
@@ -136,3 +140,4 @@ export async function readJson(ctx: Context, url: string, retryTimes = 3) {
   }while (retryTimes-- > 0);
   return undefined;
 }
+
