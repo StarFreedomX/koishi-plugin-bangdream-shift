@@ -639,7 +639,8 @@ async function canGrant(session) {
     if (session.discord){
         const ownerId = (await session.discord.getGuild(session.guildId)).owner_id;
         if (session.userId === ownerId) return true;
-        const dcRoles = (await session.discord.getGuildRoles(session.guildId)).filter((r)=>r.permissions==='8').map(r => r.id);
+        const ADMIN = 8;
+        const dcRoles = (await session.discord.getGuildRoles(session.guildId)).filter((r)=>(r.permissions & ADMIN) !== 0).map(r => r.id);
         const userRoles = (await session.discord.getGuildMember(session.guildId, session.userId)).roles
         if (userRoles.some((ur: string)=>dcRoles.includes(ur))) return true;
     }
