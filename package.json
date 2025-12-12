@@ -1,7 +1,7 @@
 {
     "name": "koishi-plugin-bangdream-shift",
     "description": "bangdream排班表插件",
-    "version": "1.0.2",
+    "version": "1.0.3",
     "contributors": [
         "StarFreedomX <starfreedomx@outlook.com>"
     ],
@@ -41,5 +41,8 @@
     },
     "dependencies": {
         "axios": "^1.10.0"
+    },
+    "devDependencies": {
+        "@koishijs/plugin-adapter-discord": "^4.5.10"
     }
 }
