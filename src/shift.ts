@@ -147,8 +147,9 @@ export class ShiftTable {
      * @param dayIndex 第几天的班表
      * @param startHour 上班时刻
      * @param endHour 下班时刻
+     * @param onlyNone
      */
-    private normalizeHour(dayIndex: number, startHour: number, endHour: number): number[] {
+    private normalizeHour(dayIndex: number, startHour: number, endHour: number, onlyNone = true): number[] {
         // 24 → 0
         if (startHour === 24) startHour = 0;
         // 0 → 24
@@ -163,10 +164,12 @@ export class ShiftTable {
             return [];
         }
 
-        // 检查每个小时 color 是否都是 'none'
-        for (let h = startHour; h < endHour; h++) {
-            if (this.shift_table[dayIndex][h].hourColor !== 'none') {
-                return []; // 冲突 → 整段取消
+        if (onlyNone){
+            // 检查每个小时 color 是否都是 'none'
+            for (let h = startHour; h < endHour; h++) {
+                if (this.shift_table[dayIndex][h].hourColor !== 'none') {
+                    return []; // 冲突 → 整段取消
+                }
             }
         }
 
@@ -339,7 +342,7 @@ export class ShiftTable {
      * @param color 颜色属性
      */
     setShiftColor(dayIndex: number, startHour: number, endHour: number, color: HourColor) {
-        const hours = this.normalizeHour(dayIndex, startHour, endHour);
+        const hours = this.normalizeHour(dayIndex, startHour, endHour, false);
         for (const h of hours) {
             this.shift_table[dayIndex][h].hourColor = color;
         }

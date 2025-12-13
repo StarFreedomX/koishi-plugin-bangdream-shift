@@ -191,7 +191,7 @@ export async function apply(ctx: Context, cfg: Config) {
                 return session.text('.success', { name: name })
             });
 
-        ctx.command('ls-shift <test:string>')
+        ctx.command('ls-shift')
             .action(async ({ session }) => {
                 bdShiftLogger.info(session.userId, 'try to list shift');
                 if (!await canGrant(session)) return session.text('permission-denied');
