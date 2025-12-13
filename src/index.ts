@@ -611,7 +611,7 @@ export async function apply(ctx: Context, cfg: Config) {
 
                 await saveShift(ctx, row)
 
-                return session.text('.success', { start, end, color })
+                return session.text('.success', { day, start, end, color })
             });
 
     }

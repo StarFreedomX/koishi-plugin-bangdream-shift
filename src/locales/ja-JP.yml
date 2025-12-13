@@ -87,7 +87,7 @@ commands:
         description: 'シフトの色を設定'
         messages:
             invalidColor: '色は次のいずれかである必要があります: {validColors}'
-            success: '色を設定しました: {start}-{end} {color}'
+            success: '色を設定しました:<br/> {day}日目 {start}-{end} {color}'
     interval-speed-on:
         description: '車速定時プッシュを有効化'
         messages:
