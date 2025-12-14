@@ -35,7 +35,7 @@ commands:
             fail: '替换玩家以下时间段已经在表中，无法进行替换:<br/> 第{day}天 {toPerson} {hourRange}'
             errorTime: '无法解析时间段，请检查参数'
             noShift: '时间段无该玩家排班，请检查参数'
-    rename-shift:
+    rename-person:
         description: '重命名玩家'
         messages:
             success: '重命名完成: {oldName} → {newName}'
@@ -86,8 +86,8 @@ commands:
     set-shift-color:
         description: '设置班表涂色'
         messages:
-            invalidColor: '颜色必须是: {validColors}'
-            success: '已设置颜色:<br/> 第{day}天 {start}-{end} {color}'
+            invalidColor: '颜色必须是是以下其中之一: {validColors}'
+            success: '已设置颜色:<br/> {day}日 {start}-{end} {color}'
     interval-speed-on:
         description: '开启车速定时推送'
         messages:

@@ -1,0 +1,103 @@
+permission-denied: '權限不足'
+lack: '缺少參數: {params}'
+noGroups: '當前群組／伺服器未綁定任何排班表'
+notOwner: '當前群組／伺服器無此排班表的管理權限'
+outOfDay: '日期超出範圍'
+
+commands:
+    create-shift:
+        description: '建立排班表'
+        messages:
+            timeFormat: '時間格式必須是 10 位 (yyyyMMddHH) / 12 位 (yyyyMMddHHmm) / 14 位 (yyyyMMddHHmmss)'
+            success: '排班表「{name}」已建立並綁定到本群組'
+    remove-shift:
+        description: '移除排班表'
+        messages:
+            noShift: '沒有名為「{name}」的排班表'
+            success: '排班表「{name}」已成功刪除'
+    add-shift:
+        description: '新增排班時段'
+        messages:
+            conflict: '該時段無法新增排班，請檢查'
+            success: '已新增以下排班： <br/>第{day}天 {person} {hourRange}'
+            fail: '以下時段已經輸入過，或時段已滿: <br/>第{day}天 {person} {hourRange}'
+            errorTime: '無法解析時間段，請檢查參數'
+    del-shift:
+        description: '刪除排班時段'
+        messages:
+            success: '已刪除<br/> 第{day}天 {person} {hourRange}'
+            fail: '失敗: 以下時段中無該玩家排班<br/> 第{day}天 {person} {hourRange}'
+            errorTime: '無法解析時間段，請檢查參數'
+    exchange-shift:
+        description: '替換排班時段'
+        messages:
+            success: '已替換<br/> 第{day}天 {fromPerson} → {toPerson} {hourRange}'
+            fail: '替換玩家在以下時段已經在表中，無法進行替換:<br/> 第{day}天 {toPerson} {hourRange}'
+            errorTime: '無法解析時間段，請檢查參數'
+            noShift: '指定時段無該玩家排班，請檢查參數'
+    rename-person:
+        description: '重新命名玩家'
+        messages:
+            success: '重新命名完成: {oldName} → {newName}'
+    set-runner:
+        description: '設定排班表跑者（runner）身份組'
+        messages:
+            invalidRanking: '無效的身份組等級。可選值: {validRankings}'
+            success: '{name} 的身份組已設定為 {ranking}'
+    del-runner:
+        description: '刪除排班表跑者（runner）身份組'
+        messages:
+            success: '{name} 的身份組已刪除'
+    ls-shift:
+        description: '列出當前群組可管理的排班表'
+    set-shift-ending:
+        description: '修改排班表的結束時間'
+    show-shift:
+        description: '顯示排班表'
+        messages:
+            success: '第{day}天的排班狀況如下'
+    show-shift-exchange:
+        description: '顯示交換表'
+        messages:
+            success: '第{day}天的交換表狀況如下'
+    show-shift-left:
+        description: '排班表剩餘空檔'
+        messages:
+            success: '排班表剩餘空檔<br/>{ranges}'
+    share-shift:
+        description: '共享排班表的管理權限'
+        messages:
+            noShift: '沒有名為「{shift_name}」的排班表'
+            success: '已授權群組 {group_gid} 管理排班表「{shift_name}」'
+    shift-group-ls:
+        description: '列出某排班表的管理群組'
+        messages:
+            noShift: '沒有名為「{shift_name}」的排班表'
+            noGroups: '暫無綁定群組'
+    switch-shift:
+        description: '切換排班表'
+        messages:
+            noShift: '沒有名為「{name}」的排班表'
+            success: '已切換到排班表 "{name}"'
+    revoke-shift:
+        description: '撤銷排班表管理權限'
+        messages:
+            success: '已撤銷群組 {group_gid} 對排班表「{shift_name}」的管理權限'
+    set-shift-color:
+        description: '設定排班表的顏色標記'
+        messages:
+            invalidColor: '顏色必須是以下其中之一: {validColors}'
+            success: '已設定顏色<br/> 第{day}天{start}-{end} {color}'
+    interval-speed-on:
+        description: '開啟車速定時推播'
+        messages:
+            notInChannel: '請在群組中使用此指令'
+            alreadyOn: '目前已開啟推播，請先刪除'
+            noMatchServer: '錯誤: 伺服器名稱未能匹配任何伺服器'
+            noEvent: '當前伺服器無進行中的活動'
+            success: '已開啟推播: 伺服器: {server} 追蹤玩家: {player}'
+    interval-speed-off:
+        description: '關閉車速定時推播'
+        messages:
+            notInChannel: '請在群組中使用此指令'
+            success: '已關閉推播'

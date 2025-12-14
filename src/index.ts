@@ -74,6 +74,7 @@ export const Config = Schema.object({
 export async function apply(ctx: Context, cfg: Config) {
     ctx.i18n.define('zh-CN', require('./locales/zh-CN'));
     ctx.i18n.define('ja-JP', require('./locales/ja-JP'));
+    ctx.i18n.define('zh-TW', require('./locales/zh-TW'));
 
     ctx.model.extend('bangdream_shift', {
         id: 'unsigned',
@@ -761,10 +762,15 @@ async function canGrant(session) {
     if (session.discord){
         const ownerId = (await session.discord.getGuild(session.guildId)).owner_id;
         if (session.userId === ownerId) return true;
-        const ADMIN = 8;
-        const dcRoles = (await session.discord.getGuildRoles(session.guildId)).filter((r)=>(r.permissions & ADMIN) !== 0).map(r => r.id);
+        const MANAGER_NUMBERS = [8,32];
+        const dcManagerRoles = (await session.discord.getGuildRoles(session.guildId))
+            .filter((r)=>
+                MANAGER_NUMBERS.some(n=>
+                    (r.permissions & n) !== 0
+                )
+            ).map(r => r.id);
         const userRoles = (await session.discord.getGuildMember(session.guildId, session.userId)).roles
-        if (userRoles.some((ur: string)=>dcRoles.includes(ur))) return true;
+        if (userRoles.some((ur: string)=>dcManagerRoles.includes(ur))) return true;
     }
     const hasRequiredRole = roles.includes('admin') || roles.includes('owner');
     // 检查用户是否有足够的权限：authority > 1 或者角色是 admin 或 owner
