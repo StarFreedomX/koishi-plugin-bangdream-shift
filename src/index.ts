@@ -1,6 +1,6 @@
-import {Context, Schema, Session, Logger, h} from 'koishi'
+import { Context, Schema, Session, Logger} from 'koishi'
 import * as utils from "./utils";
-import {HourColor, ShiftTable} from "./shift";
+import { HourColor, ShiftTable, Ranking } from "./shift";
 import {} from 'koishi-plugin-puppeteer'
 import {} from '@koishijs/plugin-adapter-discord'
 
@@ -80,7 +80,7 @@ export async function apply(ctx: Context, cfg: Config) {
         id: 'unsigned',
         name: 'string',
         shiftTable: 'json',
-    }, {primary: 'id', autoInc: true});
+    }, { primary: 'id', autoInc: true });
 
     ctx.model.extend('bangdream_shift_group', {
         gid: 'string',
@@ -90,12 +90,12 @@ export async function apply(ctx: Context, cfg: Config) {
             type: 'boolean',
             legacy: ['is_manager'],
         }
-    }, {primary: ['gid', 'shift_id']});
+    }, { primary: ['gid', 'shift_id'] });
 
     ctx.model.extend('bangdream_speed_tracker', {
         group_gid: 'string',
         tracker: 'json',
-    }, {primary: 'group_gid'})
+    }, { primary: 'group_gid' })
 
     //班表功能
     if (cfg.openShift){
@@ -189,7 +189,8 @@ export async function apply(ctx: Context, cfg: Config) {
                 }
                 const row = await loadShift(ctx, curr.shift_id)
                 row.shiftTable.setEndTime(endTs)
-                return session.text('.success', { name: name })
+                await saveShift(ctx,row)
+                return session.text('.success', { name: row.name })
             });
 
         ctx.command('ls-shift')
@@ -406,7 +407,7 @@ export async function apply(ctx: Context, cfg: Config) {
             });
 
         ctx.command('set-runner <name:string> <ranking:string>')
-            .action(async ({ session }, name, ranking) => {
+            .action(async ({ session }, name, ranking: Ranking) => {
                 bdShiftLogger.info(session.userId, 'try to set runner: ', name, ranking);
                 if (!await canGrant(session)) return session.text('permission-denied');
                 if (!name || !ranking) return session.text('lack',{ params: 'name/ranking' });
@@ -417,7 +418,7 @@ export async function apply(ctx: Context, cfg: Config) {
                 if (!curr) return session.text('noGroups');
 
                 const row = await loadShift(ctx, curr.shift_id)
-                row.shiftTable.setRanking(name, ranking as any);
+                row.shiftTable.setRanking(name, ranking);
 
                 await saveShift(ctx, row)
 
@@ -596,7 +597,7 @@ export async function apply(ctx: Context, cfg: Config) {
 
                 // 颜色校验
                 if (!validColors.includes(color as HourColor)) {
-                    return session.text('.invalidColors', { validColors: validColors.join(' / ')});
+                    return session.text('.invalidColor', { validColors: validColors.join(' / ')});
                 }
                 const curr = await getCurrentShift(ctx, getGid(session))
                 if (!curr) return session.text('noGroups')

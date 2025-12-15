@@ -13,7 +13,7 @@ import { Context } from "koishi";
 import * as fs from "node:fs";
 
 export type HourColor = 'none' | 'black' | 'gray' | 'invalid';
-type ranking = 'main' | '10' | '50' | '100' | '1000';
+export type Ranking = 'main' | '10' | '50' | '100' | '1000';
 const shiftCompleteColor = "#696969";
 const shiftNotCompleteColor = "#FFB6B2";
 const runnerColor = {
@@ -49,7 +49,7 @@ interface HourBlock {
 type DaySchedule = HourBlock[];  // 24 个小时
 
 interface memberTable {
-    [name: string]: ranking;
+    [name: string]: Ranking;
 }
 
 const coverRunnerColor = false;
@@ -180,7 +180,7 @@ export class ShiftTable {
         return hours;
     }
 
-    setRanking(name: string, ranking: ranking) {
+    setRanking(name: string, ranking: Ranking) {
         if (!name) return;
         this.member_table[name] = ranking;
     }
@@ -457,13 +457,13 @@ export class ShiftTable {
         const d = this.shift_table[dayIndex];
         let h = 0;
         while (h < 23) {
+            // 遍历 h 的 5 条轨道
             const swapped = d[h].persons.some((person, trackA) => {
                 if (!person) return false;
-                const trackB = d[h + 1].persons.indexOf(person);
-                if (trackB === -1 || trackA === trackB) return false;
-                for (let hh = h + 1; hh < 24; hh++) {
-                    [d[hh].persons[trackA], d[hh].persons[trackB]] = [d[hh].persons[trackB], d[hh].persons[trackA]];
-                }
+                const nh = h + 1; // next hour
+                const trackB = d[nh].persons.indexOf(person);
+                if (trackB === -1 || trackA === trackB) return false; // 无需调整轨道
+                [d[nh].persons[trackA], d[nh].persons[trackB]] = [d[nh].persons[trackB], d[nh].persons[trackA]];
                 return true;
             });
             if (!swapped) h++;
@@ -644,7 +644,7 @@ ${this.renderShiftExchangeHTML(dayIndex)}
     <th class="col-null">残</th>
 `;
 
-        const headerOrder: ranking[] = ["main", "10", "50", "100", "1000"];
+        const headerOrder: Ranking[] = ["main", "10", "50", "100", "1000"];
         for (const r of headerOrder) {
             html += `<th style="background: ${runnerColor[r]}">${symbolMap[r]}</th><th class="col-person">${r.replace('main','メイン')}ランナー</th>`;
         }
@@ -757,13 +757,13 @@ shiftTable.addShift(1, 5, 7, 'Dod');
 shiftTable.addShift(1, 5, 7, 'Err');
 shiftTable.addShift(1, 5, 7, 'Faa');
 // shiftTable.addShift(0, 4, 8, 'Grok');
-shiftTable.setShiftColor(1, 4, 6, 'black');
+// shiftTable.setShiftColor(1, 4, 6, 'black');
 
 
 // console.dir(shiftTable.exportSchedule(), {depth: null})
 // console.dir(shiftTable, {depth: null})
 // console.log(shiftTable.renderDay(0));
-fs.writeFileSync('test.html', shiftTable.renderShiftHTML(0))
+fs.writeFileSync('test.html', shiftTable.renderShiftHTML(1))
 // fs.writeFileSync('test.html', shiftTable.renderShiftExchangeHTML(0))
 // console.log(shiftTable.getPersons(0, 14));
 // console.log(shiftTable.getPersons(0, 17));
