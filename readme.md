@@ -1,12 +1,20 @@
 # koishi-plugin-bangdream-shift
 
-[![npm](https://img.shields.io/npm/v/koishi-plugin-bangdream-shift?style=flat-square)](https://www.npmjs.com/package/koishi-plugin-bangdream-shift)
+[![npm](https://img.shields.io/npm/v/koishi-plugin-bangdream-shift?style=flat-square)](https://www.npmjs.com/package/koishi-plugin-bangdream-shift) [![npm](https://img.shields.io/npm/l/koishi-plugin-bangdream-shift?style=flat-square)](https://www.npmjs.com/package/koishi-plugin-bangdream-shift) [![npm](https://img.shields.io/npm/dt/koishi-plugin-bangdream-shift?style=flat-square)](https://www.npmjs.com/package/koishi-plugin-bangdream-shift)
 
 本插件为 **Koishi** 作为框架的 **BanG Dream! 班表管理系统** 与 **车速定时推送功能**。
 
 ## 注意事项
 
-* 本项目某些功能需要部署StarFreedomX的tsugu后端才可正常运行
+* 本项目某些功能需要部署
+[StarFreedomX的tsugu后端](https://github.com/StarFreedomX/tsugu-bangdream-bot/tree/starfx-main)
+才可正常运行
+
+### TODO LIST
+
+* 一句话班表(add-shift-once)
+* 自动填班表功能(auto-shift)
+* 根据活动时间自动初始化(spawn-shift \<event\> \[server\])
 
 ---
 
@@ -149,7 +157,7 @@
 
 # 鸣谢
 
-- 感谢Kanade提供的繁中本地化翻译
+- 感谢[Kanade](https://github.com/KanadeVgc)提供的繁中本地化翻译
 
 | 版本      | 更新日志                     |
 |---------|--------------------------|
