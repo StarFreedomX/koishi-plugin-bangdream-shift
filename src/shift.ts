@@ -195,22 +195,32 @@ export class ShiftTable {
      * @param onlyNone
      */
     private normalizeHour(dayIndex: number, startHour: number, endHour: number, onlyNone = true): number[] {
-        const s = startHour === 24 ? 0 : startHour, e = endHour === 0 ? 24 : endHour;
+        // 基础转换：处理 24点/0点 的边界字面量
+        let s = startHour === 24 ? 0 : startHour;
+        let e = endHour === 0 ? 24 : endHour;
 
-        // 获取当天活动起止小时
+        // 获取当天活动范围
         const dS = dayIndex === 0 ? this.startHour : 0;
         const dE = dayIndex === this.days - 1 ? this.endHour : 24;
 
-        // 范围检查
-        if (s < dS || e > dE) return [];
+        // 裁切范围：取交集
+        s = Math.max(s, dS);
+        e = Math.min(e, dE);
 
-        // 冲突检查：利用 every 替代 for 循环
+        // 安全检查：如果裁切后开始时间大于等于结束时间，说明完全不在活动范围内
+        if (s >= e) return [];
+
+        // 冲突检查：在裁切后的范围内检查是否有颜色冲突
         const table = this.shift_table[dayIndex];
-        if (onlyNone && !Array.from({ length: e - s }, (_, i) => table[s + i]).every(h => h.hourColor === 'none'))
-            return [];
+        if (!table) return []; // 容错处理
 
-        // 生成结果数组
-        return Array.from({ length: e - s }, (_, i) => s + i);
+        const hours = Array.from({ length: e - s }, (_, i) => s + i);
+
+        if (onlyNone && !hours.every(hIdx => table[hIdx].hourColor === 'none')) {
+            return [];
+        }
+
+        return hours;
     }
 
     setRanking(name: string, ranking: Ranking) {
@@ -348,6 +358,7 @@ export class ShiftTable {
         for (const h of hours) {
             this.shift_table[dayIndex][h].hourColor = color;
         }
+        return hours;
     }
 
     /**

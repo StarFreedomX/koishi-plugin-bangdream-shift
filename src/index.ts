@@ -625,7 +625,7 @@ export async function apply(ctx: Context, cfg: Config) {
 
                 const row = await loadShift(ctx, curr.shift_id)
 
-                row.shiftTable.setShiftColor(
+                const hours = row.shiftTable.setShiftColor(
                     day - 1,
                     start,
                     end,
@@ -633,8 +633,9 @@ export async function apply(ctx: Context, cfg: Config) {
                 )
 
                 await saveShift(ctx, row)
-
-                return session.text('.success', { day, start, end, color })
+                if (!hours?.length) return session.text('.fail')
+                const hourRange = hoursToRanges(hours)
+                return session.text('.success', { day, hourRange, color })
             });
 
     }

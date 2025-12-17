@@ -9,6 +9,7 @@ commands:
         description: '建立排班表'
         messages:
             timeFormat: '時間格式必須是 10 位 (yyyyMMddHH) / 12 位 (yyyyMMddHHmm) / 14 位 (yyyyMMddHHmmss)'
+            invalidShiftLength: '排班表長度需要至少一個小時'
             success: '排班表「{name}」已建立並綁定到本群組'
     remove-shift:
         description: '移除排班表'
@@ -87,7 +88,8 @@ commands:
         description: '設定排班表的顏色標記'
         messages:
             invalidColor: '顏色必須是以下其中之一: {validColors}'
-            success: '已設定顏色<br/> 第{day}天{start}-{end} {color}'
+            success: '已設定顏色<br/> 第{day}天 {hourRange} {color}'
+            fail: '該時段不可用'
     interval-speed-on:
         description: '開啟車速定時推播'
         messages:

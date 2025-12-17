@@ -88,7 +88,8 @@ commands:
         description: '设置班表涂色'
         messages:
             invalidColor: '颜色必须是是以下其中之一: {validColors}'
-            success: '已设置颜色:<br/> {day}日 {start}-{end} {color}'
+            success: '已设置颜色:<br/> {day}日 {hourRange} {color}'
+            fail: '该时间段不可用'
     interval-speed-on:
         description: '开启车速定时推送'
         messages:
