@@ -427,6 +427,106 @@ export async function apply(ctx: Context, cfg: Config) {
                 return msg.length ? msg.join('\n') : session.text('.noShift');
             });
 
+        ctx.command('add-shift-once <day:number> <text:text>')
+            .action(async ({ session }, day, text) => {
+                bdShiftLogger.info(session.userId, 'try to add shift once: ', day, text);
+                // 基础校验与权限检查
+                if (!day || !text) return session.text('lack', { params: 'day/text' });
+                if (!await canGrant(session)) return session.text('permission-denied');
+
+                const curr = await getCurrentShift(ctx, getGid(session));
+                if (!curr) return session.text('noGroups');
+
+                const row = await loadShift(ctx, curr.shift_id);
+                // 校验天数范围（1 到 n）
+                if (day <= 0 || day > row.shiftTable.days) return session.text('outOfDay');
+
+                const tasks: { person: string, segments: [number, number][] }[] = [];
+
+                // 解析逻辑
+                // 匹配逻辑：只有当 数字-数字 前后是空格或边界，且在 0-24 之间时才视为时间段
+                const timeRegex = /(?:^|\s)(\d{1,2})-(\d{1,2})(?:\s|$)/g;
+                let lastIndex = 0;
+                let currentPerson = "";
+                let match: RegExpExecArray | null;
+
+                while ((match = timeRegex.exec(text)) !== null) {
+                    let s = parseInt(match[1]);
+                    let e = parseInt(match[2]);
+                    if (e === 0) e = 24;
+                    if (s === 24) s = 0;
+                    // 校验是否为合法小时区间
+                    // 这里手动微调 exec 的起始位置，防止因为正则内部的空格捕获导致跳过下一个可能的匹配
+                    timeRegex.lastIndex = match.index + match[0].length - 1;
+                    if (s >= 0 && s <= 24 && e >= 0 && e <= 24 && s < e) {
+                        // 提取匹配项之前的内容作为人名
+                        const leadText = text.substring(lastIndex, match.index).trim();
+
+                        if (leadText) {
+                            currentPerson = leadText;
+                            tasks.push({ person: currentPerson, segments: [] });
+                        }
+
+                        // 如果已经确定了当前人员，则记录该时间段
+                        if (currentPerson) {
+                            tasks[tasks.length - 1].segments.push([s, e]);
+                        }
+                        // 更新搜索起始位置，跳过已处理的文本
+                        lastIndex = timeRegex.lastIndex;
+                    }
+                }
+
+                if (tasks.length === 0) return session.text('.errorTime');
+
+                // 执行添加逻辑并收集结果
+                const successEntries: string[] = [];
+                const failEntries: string[] = [];
+
+                for (const task of tasks) {
+                    if (task.segments.length === 0) continue;
+
+                    let personAllSuccess: number[] = [];
+                    let personAllFailed: number[] = [];
+
+                    for (const [s, e] of task.segments) {
+                        // 内部 addShift 会调用 normalizeHour 进行自动裁切
+                        const { success, failed } = row.shiftTable.addShift(day - 1, s, e, task.person);
+                        personAllSuccess.push(...success);
+                        personAllFailed.push(...failed);
+                    }
+
+                    // 格式化输出：将小时列表转回 9-12 14-16 格式
+                    if (personAllSuccess.length > 0) {
+                        successEntries.push(session.text('.person-hours', {
+                            person: task.person,
+                            hourRange: hoursToRanges(personAllSuccess).join(' ')
+                        }));
+                    }
+                    if (personAllFailed.length > 0) {
+                        failEntries.push(session.text('.person-hours', {
+                            person: task.person,
+                            hourRange: hoursToRanges(personAllFailed).join(' ')
+                        }));
+                    }
+                }
+
+                // 存储数据并返回格式化消息
+                await saveShift(ctx, row);
+
+                const finalMsg: string[] = [];
+                if (successEntries.length > 0) {
+                    finalMsg.push(session.text('.success', { day, message: successEntries.join('\n') }));
+                }
+
+                if (failEntries.length > 0) {
+                    finalMsg.push(session.text('.fail', { day, message: failEntries.join('\n') }));
+                }
+
+                if (successEntries.length === 0 && failEntries.length === 0) return session.text('.errorTime');
+
+                return finalMsg.join('\n');
+            });
+
         ctx.command('set-runner <name:string> <ranking:string>')
             .action(async ({ session }, name, ranking: Ranking) => {
                 bdShiftLogger.info(session.userId, 'try to set runner: ', name, ranking);
@@ -491,7 +591,6 @@ export async function apply(ctx: Context, cfg: Config) {
                 if (day <= 0 || day > row.shiftTable.days) return session.text('outOfDay');
 
                 const image = await row.shiftTable.renderShiftImage(ctx, day - 1);
-                console.log(image.slice(0, 100))
                 // puppeteer 截图
                 return session.text('.success', {
                     day: day
@@ -509,7 +608,6 @@ export async function apply(ctx: Context, cfg: Config) {
                 const row = await loadShift(ctx, curr.shift_id)
                 if (day <= 0 || day > row.shiftTable.days) return session.text('outOfDay');
                 // puppeteer 截图
-                // console.dir(row.shiftTable.shiftExchange, {depth: null})
                 const image = await row.shiftTable.renderShiftExchangeImage(ctx, day - 1);
                 // puppeteer 截图
                 return session.text('.success', {

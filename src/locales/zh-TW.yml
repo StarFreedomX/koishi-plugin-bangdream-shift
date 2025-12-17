@@ -36,6 +36,15 @@ commands:
             fail: '替換玩家在以下時段已經在表中，無法進行替換:<br/> 第{day}天 {toPerson} {hourRange}'
             errorTime: '無法解析時間段，請檢查參數'
             noShift: '指定時段無該玩家排班，請檢查參數'
+    add-shift-once:
+        description: '新增排班時段'
+        usage: 'add-shift-once 1 Alice 15-19 20-23 Bob 17-20 Ohashi Ayaka 15-24'
+        messages:
+            conflict: '該時段無法新增排班，請檢查'
+            success: '已新增以下排班: <br/>第{day}天<br/>{message}'
+            fail: '以下時段已經輸入過，或時段已滿: <br/>第{day}天<br/>{message}'
+            person-hours: '{person} {hourRange}'
+            errorTime: '無法解析時間段，請檢查參數'
     rename-person:
         description: '重新命名玩家'
         messages:

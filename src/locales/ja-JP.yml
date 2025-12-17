@@ -20,35 +20,44 @@ commands:
         description: 'シフト枠を追加'
         messages:
             conflict: 'この時間帯にはシフトを入れられません。内容をご確認ください'
-            success: '下記のシフトを追加しました: <br/>{day}日目 {person} {hourRange}'
-            fail: '下記の時間帯はすでに入力済みであるか、枠が埋まっています: <br/>{day}日目 {person} {hourRange}'
+            success: '下記のシフトを追加しました: <br/>{day}日目 {person}さん {hourRange}'
+            fail: '下記の時間帯はすでに入力済みであるか、枠が埋まっています: <br/>{day}日目 {person}さん {hourRange}'
             errorTime: '時間帯を解析できません。パラメータを確認してください'
     del-shift:
         description: 'シフト枠を削除'
         messages:
-            success: '削除しました<br/> {day}日目 {person} {hourRange}'
-            fail: '失敗: 以下の時間帯に対象プレイヤーのシフトはありません<br/> {day}日目 {person} {hourRange}'
+            success: '削除しました<br/> {day}日目 {person}さん {hourRange}'
+            fail: '失敗: 以下の時間帯に対象プレイヤーのシフトはありません<br/> {day}日目 {person}さん {hourRange}'
             errorTime: '時間帯を解析できません。パラメータを確認してください'
     exchange-shift:
         description: 'シフト枠を入れ替え'
         messages:
-            success: '置き換えました<br/> {day}日目 {fromPerson} → {toPerson} {hourRange}'
-            fail: '置き換え対象のプレイヤーが以下の時間帯ですでにシフトに入っているため、置き換えできません:<br/> {day}日目 {toPerson} {hourRange}'
+            success: '置き換えました<br/> {day}日目 {fromPerson}さん → {toPerson}さん {hourRange}'
+            fail: '置き換え対象のプレイヤーが以下の時間帯ですでにシフトに入っているため、置き換えできません:<br/> {day}日目 {toPerson}さん {hourRange}'
             noShift: '指定した時間帯に対象プレイヤーのシフトがありません。パラメータを確認してください'
             errorTime: '時間帯を解析できません。パラメータを確認してください'
-    rename-shift:
+    add-shift-once:
+        description: 'シフト枠を追加(1行で)'
+        usage: 'add-shift-once 1 Alice 15-19 20-23 Bob 17-20 Ohashi Ayaka 15-24'
+        messages:
+            conflict: 'この時間帯にはシフトを入れられません。内容をご確認ください'
+            success: '下記のシフトを追加しました: <br/>{day}日目<br/>{message}'
+            fail: '下記の時間帯はすでに入力済みであるか、枠が埋まっています: <br/>{day}日目 <br/>{message}'
+            person-hours: '{person}さん {hourRange}'
+            errorTime: '時間帯を解析できません。パラメータを確認してください'
+    rename-person:
         description: 'プレイヤーの名前を変更する'
         messages:
-            success: '名前の変更が完了しました: {oldName} → {newName}'
+            success: '名前の変更が完了しました: {oldName}さん → {newName}さん'
     set-runner:
         description: 'シフトのランナー役割を設定'
         messages:
             invalidRanking: '無効なランクです。選択可能な値: {validRankings}'
-            success: '{name} のランクを {ranking} に設定しました'
+            success: '{name}さん のランクを {ranking} に設定しました'
     del-runner:
         description: 'シフトのランナー役割を削除'
         messages:
-            success: '{name} のランク情報を削除しました'
+            success: '{name}さん のランク情報を削除しました'
     ls-shift:
         description: '現在のグループで管理可能なシフトを一覧表示'
     set-shift-ending:
