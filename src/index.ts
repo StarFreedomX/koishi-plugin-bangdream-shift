@@ -1,11 +1,11 @@
-import { Context, Schema, Session, Logger} from 'koishi'
+import { Context, Schema, Session, Logger } from 'koishi'
 import * as utils from "./utils";
-import { HourColor, ShiftTable, Ranking } from "./shift";
+import { HourColor, ShiftTable, Ranking, ShiftError } from "./shift";
 import {} from 'koishi-plugin-puppeteer'
 import {} from '@koishijs/plugin-adapter-discord'
 
 export const name = 'bangdream-shift'
-export const using = ['puppeteer','database'] as const
+export const using = ['puppeteer', 'database'] as const
 export const bdShiftLogger: Logger = new Logger("bangdream-shift");
 
 
@@ -14,7 +14,7 @@ declare module 'koishi' {
     interface Tables {
         bangdream_shift: bangdream_shift;
         bangdream_shift_group: bangdream_shift_group;
-        bangdream_speed_tracker:bangdream_speed_tracker;
+        bangdream_speed_tracker: bangdream_speed_tracker;
     }
 }
 
@@ -24,7 +24,7 @@ export interface bangdream_shift {
     shiftTable: ShiftTable
 }
 
-export interface bangdream_shift_group{
+export interface bangdream_shift_group {
     gid: string,
     shift_id: number,
     using: boolean,
@@ -66,9 +66,9 @@ export const Config = Schema.object({
         Schema.const(Server.cn).description('cn'),
         Schema.const(Server.en).description('en'),
         Schema.const(Server.tw).description('tw'),
-        Schema.const(Server.kr).description('kr'),
+        Schema.const(Server.kr).description('kr')
     ]).default(Server.jp).description('默认服务器'),
-    backendUrl: Schema.string().default('http://localhost:3000').description('后端服务器地址'),
+    backendUrl: Schema.string().default('http://localhost:3000').description('后端服务器地址')
 })
 
 export async function apply(ctx: Context, cfg: Config) {
@@ -79,7 +79,7 @@ export async function apply(ctx: Context, cfg: Config) {
     ctx.model.extend('bangdream_shift', {
         id: 'unsigned',
         name: 'string',
-        shiftTable: 'json',
+        shiftTable: 'json'
     }, { primary: 'id', autoInc: true });
 
     ctx.model.extend('bangdream_shift_group', {
@@ -88,17 +88,17 @@ export async function apply(ctx: Context, cfg: Config) {
         using: 'boolean',
         is_owner: {
             type: 'boolean',
-            legacy: ['is_manager'],
+            legacy: ['is_manager']
         }
     }, { primary: ['gid', 'shift_id'] });
 
     ctx.model.extend('bangdream_speed_tracker', {
         group_gid: 'string',
-        tracker: 'json',
+        tracker: 'json'
     }, { primary: 'group_gid' })
 
     //班表功能
-    if (cfg.openShift){
+    if (cfg.openShift) {
         // 创建班表，名字不能和已有的重复
         ctx.command('create-shift <name:string> <start:string> <end:string>')
             .action(async ({ session }, name, start, end) => {
@@ -106,39 +106,44 @@ export async function apply(ctx: Context, cfg: Config) {
                 if (!await canGrant(session)) return session.text('permission-denied');
                 if (!start || !end) return session.text('lack', { params: 'start/end' });
                 if (!name) return session.text('lack', { params: 'name' });
-
-                let startTs: string,endTs: string;
                 try {
+                    let startTs: string, endTs: string;
+
                     const nearestStart = roundToNearestHour(start);
-                    const nearestEnd   = roundToNearestHour(end);
+                    const nearestEnd = roundToNearestHour(end);
                     [startTs, endTs] = [nearestStart, nearestEnd]
-                }catch (e) {
-                    if(e.message === 'Invalid Time Format'){
-                        return session.text('.timeFormat')
+
+                    // 创建 shiftTable 实例
+                    const table = new ShiftTable(startTs, endTs, cfg.defaultTimezone)
+
+                    // 插入班表
+                    const bangdream_shift = await ctx.database.create('bangdream_shift', {
+                        name: name,
+                        shiftTable: table
+                    })
+                    // 当前群绑定该表
+                    // 先把当前群所有班表置为未使用
+                    await ctx.database.set('bangdream_shift_group', { gid: getGid(session) }, { using: false })
+
+                    // 当前群绑定该表
+                    await ctx.database.create('bangdream_shift_group', {
+                        gid: getGid(session),
+                        shift_id: bangdream_shift.id,
+                        using: true,
+                        is_owner: true
+                    })
+
+                    return session.text('.success', { name: name })
+                } catch (e) {
+                    if (e instanceof ShiftError) {
+                        if (e.code === "INVALID_TIME_FORMAT") {
+                            return session.text('.timeFormat')
+                        } else if (e.code === "OUT_OF_BOUNDS") {
+                            return session.text('.invalidShiftLength')
+                        }
                     }
-                    return e.message;
+                    throw e;
                 }
-                // 创建 shiftTable 实例
-                const table = new ShiftTable(startTs, endTs, cfg.defaultTimezone)
-
-                // 插入班表
-                const bangdream_shift = await ctx.database.create('bangdream_shift', {
-                    name: name,
-                    shiftTable: table,
-                })
-                // 当前群绑定该表
-                // 先把当前群所有班表置为未使用
-                await ctx.database.set('bangdream_shift_group', { gid: getGid(session) }, { using: false })
-
-                // 当前群绑定该表
-                await ctx.database.create('bangdream_shift_group', {
-                    gid: getGid(session),
-                    shift_id: bangdream_shift.id,
-                    using: true,
-                    is_owner: true,
-                })
-
-                return session.text('.success',{ name: name })
             });
 
         ctx.command('remove-shift <name:string>')
@@ -160,12 +165,12 @@ export async function apply(ctx: Context, cfg: Config) {
 
                 // 删除引用该班表的 bangdream_shift_group
                 await ctx.database.remove('bangdream_shift_group', {
-                    shift_id: shift.id,
+                    shift_id: shift.id
                 })
 
                 // 删除班表本体
                 await ctx.database.remove('bangdream_shift', {
-                    id: shift.id,
+                    id: shift.id
                 })
 
                 return session.text('.success', { name: name })
@@ -181,15 +186,19 @@ export async function apply(ctx: Context, cfg: Config) {
                 let endTs: string;
                 try {
                     endTs = roundToNearestHour(end)
-                }catch (e) {
-                    if(e.message === 'Invalid Time Format'){
-                        return session.text('.timeFormat')
+                } catch (e) {
+                    if (e instanceof ShiftError) {
+                        if (e.code === "INVALID_TIME_FORMAT") {
+                            return session.text('.timeFormat')
+                        } else if (e.code === "OUT_OF_BOUNDS") {
+                            return session.text('.invalidShiftLength')
+                        }
                     }
-                    return e.message;
+                    throw e;
                 }
                 const row = await loadShift(ctx, curr.shift_id)
                 row.shiftTable.setEndTime(endTs)
-                await saveShift(ctx,row)
+                await saveShift(ctx, row)
                 return session.text('.success', { name: row.name })
             });
 
@@ -209,7 +218,7 @@ export async function apply(ctx: Context, cfg: Config) {
                 // 一次性查询所有对应 shift_id 的班表
                 const shifts = await ctx.database.get('bangdream_shift', { id: { $in: groups.map(g => g.shift_id) } })
 
-                return shifts.map(s => `[${using.includes(s.id)?"*":" "}] ${s.name}`).join('\n')
+                return shifts.map(s => `[${using.includes(s.id) ? "*" : " "}] ${s.name}`).join('\n')
 
 
             });
@@ -231,7 +240,10 @@ export async function apply(ctx: Context, cfg: Config) {
                 // 先把当前群的所有班表 using = false
                 await ctx.database.set('bangdream_shift_group', { gid: getGid(session) }, { using: false })
                 // 把指定班表设为使用中
-                await ctx.database.set('bangdream_shift_group', { gid: getGid(session), shift_id: shift_id }, { using: true })
+                await ctx.database.set('bangdream_shift_group', {
+                    gid: getGid(session),
+                    shift_id: shift_id
+                }, { using: true })
 
                 return session.text('.success', { name })
             })
@@ -240,10 +252,10 @@ export async function apply(ctx: Context, cfg: Config) {
             .action(async ({ session }, person, day, startHour, endHour, startHour2, endHour2, startHour3, endHour3, startHour4, endHour4, startHour5, endHour5) => {
                 bdShiftLogger.info(session.userId, 'try to add shift: ', person, day,
                     ...[[startHour, endHour],
-                    [startHour2, endHour2],
-                    [startHour3, endHour3],
-                    [startHour4, endHour4],
-                    [startHour5, endHour5]].filter(([s,t])=>s!==undefined || t!==undefined),
+                        [startHour2, endHour2],
+                        [startHour3, endHour3],
+                        [startHour4, endHour4],
+                        [startHour5, endHour5]].filter(([s, t]) => s !== undefined || t !== undefined)
                 );
 
                 if (!await canGrant(session)) return session.text('permission-denied');
@@ -263,7 +275,7 @@ export async function apply(ctx: Context, cfg: Config) {
                     [startHour2, endHour2],
                     [startHour3, endHour3],
                     [startHour4, endHour4],
-                    [startHour5, endHour5],
+                    [startHour5, endHour5]
                 ].filter(([s, e]) => s !== undefined && e !== undefined && s < e) as [number, number][];
                 if (!segments?.length) return session.text('.errorTime');
                 // 用于汇总成功/失败的小时
@@ -304,7 +316,7 @@ export async function apply(ctx: Context, cfg: Config) {
                         [startHour2, endHour2],
                         [startHour3, endHour3],
                         [startHour4, endHour4],
-                        [startHour5, endHour5]].filter(([s,t])=>s!==undefined || t!==undefined)
+                        [startHour5, endHour5]].filter(([s, t]) => s !== undefined || t !== undefined)
                 );
 
                 if (!await canGrant(session)) return session.text('permission-denied');
@@ -324,7 +336,7 @@ export async function apply(ctx: Context, cfg: Config) {
                     [startHour2, endHour2],
                     [startHour3, endHour3],
                     [startHour4, endHour4],
-                    [startHour5, endHour5],
+                    [startHour5, endHour5]
                 ].filter(([s, e]) => s < e && s !== undefined && e !== undefined) as [number, number][];
 
                 if (!segments?.length) return session.text('.errorTime');
@@ -334,7 +346,7 @@ export async function apply(ctx: Context, cfg: Config) {
                 // 逐段删除
                 for (const [s, e] of segments) {
                     const removed = row.shiftTable.delShift(day - 1, s, e, person);
-                    removed.forEach(h => allRemoved.add(h));
+                    removed.forEach(h => void allRemoved.add(h));
                 }
 
                 await saveShift(ctx, row);
@@ -342,7 +354,11 @@ export async function apply(ctx: Context, cfg: Config) {
                 const removedRanges = hoursToRanges([...allRemoved]);
 
                 if (!removedRanges.length) {
-                    return session.text('.fail', { person, day, hourRange: segments.map(([s, e]) => `${s}-${e}`).join(' ') });
+                    return session.text('.fail', {
+                        person,
+                        day,
+                        hourRange: segments.map(([s, e]) => `${s}-${e}`).join(' ')
+                    });
                 }
 
                 return session.text('.success', { person, day, hourRange: removedRanges.join(' ') });
@@ -356,7 +372,7 @@ export async function apply(ctx: Context, cfg: Config) {
                         [startHour2, endHour2],
                         [startHour3, endHour3],
                         [startHour4, endHour4],
-                        [startHour5, endHour5]].filter(([s,t])=>s!==undefined || t!==undefined)
+                        [startHour5, endHour5]].filter(([s, t]) => s !== undefined || t !== undefined)
                 );
 
                 if (!await canGrant(session)) return session.text('permission-denied');
@@ -373,7 +389,7 @@ export async function apply(ctx: Context, cfg: Config) {
                     [startHour2, endHour2],
                     [startHour3, endHour3],
                     [startHour4, endHour4],
-                    [startHour5, endHour5],
+                    [startHour5, endHour5]
                 ].filter(([s, e]) => s !== undefined && e !== undefined && s < e) as [number, number][];
                 if (!segments?.length) return session.text('.errorTime');
                 // 用于汇总成功/失败的小时
@@ -396,7 +412,12 @@ export async function apply(ctx: Context, cfg: Config) {
                 const msg: string[] = [];
 
                 if (successRanges.length) {
-                    msg.push(session.text('.success', { day, fromPerson: oldName, toPerson: newName, hourRange: successRanges.join(' ') }));
+                    msg.push(session.text('.success', {
+                        day,
+                        fromPerson: oldName,
+                        toPerson: newName,
+                        hourRange: successRanges.join(' ')
+                    }));
                 }
 
                 if (failedRanges.length) {
@@ -410,7 +431,7 @@ export async function apply(ctx: Context, cfg: Config) {
             .action(async ({ session }, name, ranking: Ranking) => {
                 bdShiftLogger.info(session.userId, 'try to set runner: ', name, ranking);
                 if (!await canGrant(session)) return session.text('permission-denied');
-                if (!name || !ranking) return session.text('lack',{ params: 'name/ranking' });
+                if (!name || !ranking) return session.text('lack', { params: 'name/ranking' });
                 const validRankings = ['main', '10', '50', '100', '1000'];
                 if (!validRankings.includes(ranking)) return session.text('.invalidRanking', { validRankings: validRankings.join(',') });
 
@@ -422,14 +443,14 @@ export async function apply(ctx: Context, cfg: Config) {
 
                 await saveShift(ctx, row)
 
-                return session.text('.success', { name,ranking });
+                return session.text('.success', { name, ranking });
             });
 
         ctx.command('del-runner <name:string>')
             .action(async ({ session }, name) => {
                 bdShiftLogger.info(session.userId, 'try to del runner: ', name);
                 if (!await canGrant(session)) return session.text('permission-denied');
-                if (!name) return session.text('lack',{ params: 'name' });
+                if (!name) return session.text('lack', { params: 'name' });
 
                 const curr = await getCurrentShift(ctx, getGid(session))
                 if (!curr) return session.text('noGroups');
@@ -470,10 +491,10 @@ export async function apply(ctx: Context, cfg: Config) {
                 if (day <= 0 || day > row.shiftTable.days) return session.text('outOfDay');
 
                 const image = await row.shiftTable.renderShiftImage(ctx, day - 1);
-                console.log(image.slice(0,100))
+                console.log(image.slice(0, 100))
                 // puppeteer 截图
                 return session.text('.success', {
-                    day: day,
+                    day: day
                 }) + image;
             });
 
@@ -492,7 +513,7 @@ export async function apply(ctx: Context, cfg: Config) {
                 const image = await row.shiftTable.renderShiftExchangeImage(ctx, day - 1);
                 // puppeteer 截图
                 return session.text('.success', {
-                    day: day,
+                    day: day
                 }) + image;
             });
 
@@ -545,7 +566,7 @@ export async function apply(ctx: Context, cfg: Config) {
                     gid: group_gid,
                     shift_id,
                     using: false,
-                    is_owner: false,
+                    is_owner: false
                 })
 
                 return session.text('.success', { group_gid, shift_name });
@@ -585,19 +606,19 @@ export async function apply(ctx: Context, cfg: Config) {
             })
 
         ctx.command('set-shift-color <day:number> <start:number> <end:number> <color:string>')
-            .action(async ({ session }, day, start, end, color:HourColor) => {
+            .action(async ({ session }, day, start, end, color: HourColor) => {
                 bdShiftLogger.info(session.userId, 'try to set shift color: ', day, start, end, color);
                 if (!await canGrant(session)) return session.text('permission-denied');
                 const validColors: HourColor[] = ['none', 'gray', 'black', 'invalid']
 
                 // 参数检查
                 if (!day) return session.text('lack', { params: 'day' });
-                if (start == null || end == null) return session.text('lack', { params: 'start/end' });
+                if (start === null || end === null) return session.text('lack', { params: 'start/end' });
                 if (!color) return session.text('lack', { params: 'color' });
 
                 // 颜色校验
                 if (!validColors.includes(color as HourColor)) {
-                    return session.text('.invalidColor', { validColors: validColors.join(' / ')});
+                    return session.text('.invalidColor', { validColors: validColors.join(' / ') });
                 }
                 const curr = await getCurrentShift(ctx, getGid(session))
                 if (!curr) return session.text('noGroups')
@@ -620,82 +641,92 @@ export async function apply(ctx: Context, cfg: Config) {
 
     //车速定时功能
     if (cfg.openSpeedTracker) {
+        // 1. 开启推送指令
         ctx.command('interval-speed-on [server:string]')
             .alias('开启车速定时推送')
             .option('player', '-p <player> 比对玩家')
-            .action(async ({session, options}, server) => {
+            .action(async ({ session, options }, server) => {
                 if (!session.channelId) return session.text('.notInChannel');
-                const nowTracker = await ctx.database.get('bangdream_speed_tracker', {group_gid: session.cid});
-                if (nowTracker?.length) return session.text('.alreadyOn');
-                let mainServer: Server;
+
+                // 检查是否已开启
+                const [nowTracker] = await ctx.database.get('bangdream_speed_tracker', { group_gid: session.cid });
+                if (nowTracker) return session.text('.alreadyOn');
+
+                // 确定服务器
+                let mainServer = cfg.defaultServer;
                 if (server) {
-                    const serverFromServerNameFuzzySearch = await utils.serverNameFuzzySearchResult(ctx, cfg, server)
-                    if (serverFromServerNameFuzzySearch == -1) {
-                        return session.text('noMatchServer');
-                    }
-                    mainServer = serverFromServerNameFuzzySearch;
-                } else {
-                    mainServer = cfg.defaultServer
+                    const fuzzy = await utils.serverNameFuzzySearchResult(ctx, cfg, server);
+                    if (fuzzy === -1) return session.text('noMatchServer');
+                    mainServer = fuzzy;
                 }
-                let eventInfo: { eventId: string, startAt: number, endAt: number } = undefined;
-                const now = Date.now()
-                for (const [key, value] of Object.entries(await utils.readJson(ctx, `${BestdoriAPI}/events/all.5.json`)).reverse()) {
-                    const start = +(value?.['startAt']?.[mainServer])
-                    const end = +(value?.['endAt']?.[mainServer])
-                    if (start < now && now < end) {
-                        eventInfo = {eventId: key, startAt: start, endAt: end}
-                        break;
-                    }
-                }
-                if (!eventInfo) {
-                    return session.text('noEvent');
-                }
+
+                // 获取当前活动信息
+                const events = await utils.readJson(ctx, `${BestdoriAPI}/events/all.5.json`);
+                const now = Date.now();
+                const eventEntry = Object.entries(events).reverse().find(([_, v]) => {
+                    const start = +v?.['startAt']?.[mainServer], end = +v?.['endAt']?.[mainServer];
+                    return start < now && now < end;
+                });
+
+                if (!eventEntry) return session.text('noEvent');
+
+                const [eventId, value] = eventEntry;
                 const trackerData = {
                     group_gid: session.cid,
                     tracker: {
                         trackerPlayer: options.player,
-                        mainServer: mainServer,
-                        deadlineStamp: eventInfo.endAt,
-                    },
-                }
-                await ctx.database.create('bangdream_speed_tracker', trackerData)
+                        mainServer,
+                        deadlineStamp: +value['endAt'][mainServer]
+                    }
+                };
+
+                await ctx.database.create('bangdream_speed_tracker', trackerData);
                 return session.text('.success', {
-                    server: ['jp', 'en', 'tw', 'cn', 'kr'][trackerData.tracker.mainServer],
-                    player: trackerData.tracker.trackerPlayer ?? 'null'
-                })
+                    server: ['jp', 'en', 'tw', 'cn', 'kr'][mainServer],
+                    player: options.player ?? 'null'
+                });
             });
 
+        // 2. 关闭推送指令
         ctx.command('interval-speed-off')
             .alias('关闭车速定时推送')
-            .action(async ({session}) => {
+            .action(async ({ session }) => {
                 if (!session.channelId) return session.text('.noChannel');
-                await ctx.database.remove('bangdream_speed_tracker', {group_gid: session.cid})
-                return session.text('.success')
-            })
+                await ctx.database.remove('bangdream_speed_tracker', { group_gid: session.cid });
+                return session.text('.success');
+            });
 
-        const now = new Date();
-        const nextHour = new Date(now);
-        nextHour.setMinutes(0, 0, 0);
-        nextHour.setHours(now.getHours() + 1);
-        const delayToNextHour = nextHour.getTime() - now.getTime();
-        setTimeout(() => {
-            executeTask();
-            const interval = setInterval(() => {
-                executeTask();
-            }, 3600 * 1000); // 每小时执行一次
-            ctx.on('dispose', () => {
-                clearInterval(interval);
-            })
-        }, delayToNextHour);
+        // 3. 定时任务逻辑：使用 ctx.setTimeout 配合整点对齐
+        const alignToHour = () => {
+            const now = Date.now();
+            const delay = 3600000 - (now % 3600000); // 距离下一个整点的毫秒数
+
+            ctx.setTimeout(async () => {
+                await executeTask();
+                alignToHour(); // 递归调用保持整点对齐
+            }, delay);
+        };
+
+        alignToHour();
+
         async function executeTask() {
-            const rows = await ctx.database.get('bangdream_speed_tracker', {})
+            const rows = await ctx.database.get('bangdream_speed_tracker', {});
+            const now = Date.now();
+
             for (const row of rows) {
-                const trackerInfo: speedIntervalTracker = row.tracker;
-                if (Date.now() > trackerInfo.deadlineStamp) {
-                    await ctx.database.remove('bangdream_speed_tracker', {group_gid: row.group_gid})
+                const { tracker, group_gid } = row;
+                // 过期自动清理
+                if (now > tracker.deadlineStamp) {
+                    await ctx.database.remove('bangdream_speed_tracker', { group_gid });
+                    continue;
                 }
-                const list = await utils.commandTopRateRanking(cfg, trackerInfo.mainServer, 60, undefined, trackerInfo.trackerPlayer)
-                await ctx.broadcast([row.group_gid], utils.paresMessageList(list))
+                // 获取数据并推送
+                try {
+                    const list = await utils.commandTopRateRanking(cfg, tracker.mainServer, 60, undefined, tracker.trackerPlayer);
+                    await ctx.broadcast([group_gid], utils.paresMessageList(list));
+                } catch (e) {
+                    ctx.logger('speed-tracker').error(e);
+                }
             }
         }
     }
@@ -708,7 +739,7 @@ export async function apply(ctx: Context, cfg: Config) {
 async function getCurrentShift(ctx: Context, gid: string) {
     const record = await ctx.database.get('bangdream_shift_group', {
         gid,
-        using: true,
+        using: true
     })
     return record[0] || null
 }
@@ -733,7 +764,7 @@ async function saveShift(ctx: Context, row: bangdream_shift) {
     // koishi 的 json 字段自动序列化
     await ctx.database.set('bangdream_shift', { id: row.id }, {
         name: row.name,
-        shiftTable: row.shiftTable,
+        shiftTable: row.shiftTable
     })
 }
 
@@ -743,7 +774,7 @@ async function saveShift(ctx: Context, row: bangdream_shift) {
 async function isShiftOwner(ctx: Context, gid: string, shift_id: number) {
     const record = await ctx.database.get('bangdream_shift_group', {
         gid,
-        shift_id,
+        shift_id
     })
     return record[0]?.is_owner ?? false
 }
@@ -752,96 +783,84 @@ async function isShiftOwner(ctx: Context, gid: string, shift_id: number) {
  * 检查用户权限
  */
 async function canGrant(session) {
-    // 单人作用域不需要区分管理身份
+    // 单人作用域直接放行
     if (!session.guildId) return true;
-    // 获取 session.event.member.roles 和 session.author.roles
-    const eventMemberRoles = session.event.member?.roles || [];
-    const authorRoles = session.author.roles || [];
-    // 合并两个角色列表并去重
-    const roles = Array.from(new Set([...eventMemberRoles, ...authorRoles]));
-    // 检查是否有所需角色
-    if (session.discord){
-        const ownerId = (await session.discord.getGuild(session.guildId)).owner_id;
-        if (session.userId === ownerId) return true;
-        const MANAGER_NUMBERS = [8,32];
-        const dcManagerRoles = (await session.discord.getGuildRoles(session.guildId))
-            .filter((r)=>
-                MANAGER_NUMBERS.some(n=>
-                    (r.permissions & n) !== 0
-                )
-            ).map(r => r.id);
-        const userRoles = (await session.discord.getGuildMember(session.guildId, session.userId)).roles
-        if (userRoles.some((ur: string)=>dcManagerRoles.includes(ur))) return true;
+
+    // 本地权限
+    // 使用 Set 提高查找效率
+    const rolesSet = new Set([
+        ...(session.event.member?.roles || []),
+        ...(session.author.roles || [])
+    ]);
+
+    if (session.user.authority > 1 || rolesSet.has('admin') || rolesSet.has('owner')) {
+        return true;
     }
-    const hasRequiredRole = roles.includes('admin') || roles.includes('owner');
-    // 检查用户是否有足够的权限：authority > 1 或者角色是 admin 或 owner
-    return session.user.authority > 1 || hasRequiredRole;
+
+    // Discord 权限
+    if (session.discord) {
+        try {
+            // 获取服务器信息并校验 Owner
+            const guild = await session.discord.getGuild(session.guildId);
+            if (session.userId === guild.owner_id) return true;
+
+            // 权限位掩码 (使用 BigInt 确保 32 位以上也安全)
+            // 1n << 3n 是 ADMINISTRATOR, 1n << 5n 是 MANAGE_GUILD
+            const MANAGER_MASK = (1n << 3n) | (1n << 5n);
+
+            // 获取服务器所有角色，筛选出具有管理权限的角色 ID 列表
+            const dcManagerRoles = (await session.discord.getGuildRoles(session.guildId))
+                .filter((r) => (BigInt(r.permissions) & MANAGER_MASK) !== 0n)
+                .map(r => r.id);
+
+            // 获取当前成员的角色列表
+            const member = await session.discord.getGuildMember(session.guildId, session.userId);
+            const userRoles = member.roles || [];
+
+            // 检查用户角色是否包含在管理角色列表中
+            if (userRoles.some((ur: string) => dcManagerRoles.includes(ur))) {
+                return true;
+            }
+        } catch (e) {
+            console.error("[Permission Check Error]:", e);
+        }
+    }
+
+    return false;
 }
 
 function getGid(session: Session) {
     return session.guild ? session.gid : session.uid
 }
 
-function roundToNearestHour (str: string): string {
-    if (!/^\d{10}$/.test(str) && !/^\d{12}$/.test(str) && !/^\d{14}$/.test(str)) {
-        throw new Error('Invalid Time Format')
-    }
+function roundToNearestHour(str: string): string {
+    if (!/^\d{10,14}$/.test(str) || str.length % 2 !== 0) throw new ShiftError("INVALID_TIME_FORMAT", 'Invalid Time Format');
 
-    const year = str.slice(0, 4);
-    const month = str.slice(4, 6);
-    const day = str.slice(6, 8);
-    let hour = Number(str.slice(8, 10));
-
-    const minute = str.length >= 12 ? Number(str.slice(10, 12)) : 0;
-    const second = str.length === 14 ? Number(str.slice(12, 14)) : 0;
-
-    // 四舍五入规则
-    const shouldRoundUp = minute > 30 || (minute === 30 && second >= 30);
-
-    if (!shouldRoundUp) {
-        return `${year}${month}${day}${String(hour).padStart(2, "0")}`;
-    }
-
-    // 需要进位
-    if (++hour < 24) {
-        return `${year}${month}${day}${String(hour).padStart(2, "0")}`;
-    }
-
-    // 构造一个 JS Date
-    const d = new Date(Number(year), Number(month) - 1, Number(day));
-    d.setDate(d.getDate() + 1);
-
-    const Y = d.getFullYear();
-    const M = String(d.getMonth() + 1).padStart(2, "0");
-    const D = String(d.getDate()).padStart(2, "0");
-
-    return `${Y}${M}${D}00`;
+    // 每 2 或 4 位切割一次：2025 | 12 | 10 | 15 ...
+    const [Y, M, D, H, m, s] = (str.match(/(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})?(\d{2})?/) || [])
+        .slice(1).map(v => +v || 0);
+    // 逻辑：如果>=半小时，则小时 +1
+    const d = new Date(Y, M - 1, D, H + Math.round(m / 60 + s / 3600));
+    //格式化
+    const f = (n: number) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}${f(d.getMonth() + 1)}${f(d.getDate())}${f(d.getHours())}`;
 }
 
 function hoursToRanges(hours: number[]): string[] {
     if (!hours.length) return [];
 
-    hours = [...hours].sort((a, b) => a - b);
-    const result: string[] = [];
+    // 先排序，确保逻辑正确
+    const sorted = [...hours].sort((a, b) => a - b);
+    const ranges: string[] = [];
+    let start = sorted[0];
 
-    let start = hours[0];
-    let prev = hours[0];
-
-    for (let i = 1; i < hours.length; i++) {
-        const h = hours[i];
-        if (h === prev + 1) {
-            // 连续
-            prev = h;
-        } else {
-            // 输出前一段（结束小时 +1）
-            result.push(`${start}-${prev + 1}`);
-            start = h;
-            prev = h;
+    sorted.forEach((h, i) => {
+        // 如果当前小时不是下一位的连续值，或者是最后一个元素
+        if (sorted[i + 1] !== h + 1) {
+            ranges.push(`${start}-${h + 1}`);
+            start = sorted[i + 1];
         }
-    }
+    });
 
-    // 最后一段
-    result.push(`${start}-${prev + 1}`);
-
-    return result;
+    return ranges;
 }

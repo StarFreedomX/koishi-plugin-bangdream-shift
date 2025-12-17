@@ -9,6 +9,7 @@ commands:
         description: '创建班表'
         messages:
             timeFormat: '时间格式必须是 10 位 (yyyyMMddHH) / 12 位 (yyyyMMddHHmm) / 14 位 (yyyyMMddHHmmss)'
+            invalidShiftLength: '班表长度需要至少一个小时'
             success: '班表「{name}」已创建并绑定到本群'
     remove-shift:
         description: '移除班表'

@@ -12,24 +12,32 @@ shiftTable初始化时提供startTs: number, endTs: number, timezone: string = '
 import { Context } from "koishi";
 import * as fs from "node:fs";
 
-export type HourColor = 'none' | 'black' | 'gray' | 'invalid';
-export type Ranking = 'main' | '10' | '50' | '100' | '1000';
-const shiftCompleteColor = "#696969";
-const shiftNotCompleteColor = "#FFB6B2";
+export const HOUR_COLORS = ['none', 'black', 'gray', 'invalid'] as const;
+export const RANKINGS = ["main", "10", "50", "100", "1000"] as const;
+export const SHIFT_ERROR_CODES = ['INVALID_TIME_FORMAT', 'OUT_OF_BOUNDS'] as const;
+export type HourColor = typeof HOUR_COLORS[number];
+export type Ranking = typeof RANKINGS[number];
+export type ShiftErrorCodes = typeof SHIFT_ERROR_CODES[number];
+const SHIFT_COMPLETED_COLOR = "#696969";
+const SHIFT_NOT_COMPLETE_COLOR = "#FFB6B2";
 const runnerColor = {
     'main': '#B6FEFD',
     '10': '#FEED55',
     '50': '#FAC467',
     '100': '#FA6767',
-    '1000': '#79FA67',
+    '1000': '#79FA67'
 }
-const shiftColor = {
-    'start': '#F0FFFF',
-    'running': '#FFFFF0',
-    'end': '#FFE4E1',
-    'oneHour': '#F0FFF0',
+const SHIFT_COLORS = {
+    START: '#F0FFFF',
+    RUNNING: '#FFFFF0',
+    END: '#FFE4E1',
+    ONE_HOUR: '#F0FFF0',
+    BLACK: '#000000',
+    GRAY: '#B7B7B7'
 }
-const symbolMap: Record<string, string> = {
+// 必须按顺序，(前一小时有班)<<1 +(后一小时有班)*1得出的索引即为颜色
+const SHIFT_PLAYER_COLORS = [SHIFT_COLORS.ONE_HOUR, SHIFT_COLORS.START, SHIFT_COLORS.END, SHIFT_COLORS.RUNNING] as const;
+const SYMBOL_MAP: Record<string, string> = {
     "main": "★",
     // "10": "■",
     // "50": "●",
@@ -38,7 +46,7 @@ const symbolMap: Record<string, string> = {
     "10": " ",
     "50": " ",
     "100": " ",
-    "1000": " ",
+    "1000": " "
 };
 
 interface HourBlock {
@@ -54,28 +62,71 @@ interface memberTable {
 
 const coverRunnerColor = false;
 
-
 interface ShiftExchange {
     onDuty: string[];    // 上班的人
     offDuty: string[];   // 下班的人
 }
 
 export class ShiftTable {
-    get days(): number {
-        return this._days;
+
+    set timezone(value: string) {this._timezone = value;}
+
+    get eventEndTime(): string {return this._eventEndTime;}
+
+    set eventEndTime(value: string) {
+        this._eventEndTime = value;
+        this._eCache = undefined;
     }
 
-    set days(value: number) {
-        this._days = value;
+    get eventStartTime(): string {return this._eventStartTime;}
+
+    set eventStartTime(value: string) {
+        this._eventStartTime = value;
+        this._sCache = undefined;
     }
+
+    get days(): number { return this._days }
+
+    set days(value: number) { this._days = value }
+
+    // 统一解析逻辑：返回对象，这样 Getter 只需要访问属性，不产生二次计算
+    private _parse(t: string) {
+        const [y, m, d, h] = [t.slice(0, 4), t.slice(4, 6), t.slice(6, 8), t.slice(8, 10)].map(Number);
+        return { year: y, month: m, day: d, hour: h };
+    }
+
+    // 缓存解析结果
+    private _sCache?: ReturnType<typeof this._parse>;
+    private _eCache?: ReturnType<typeof this._parse>;
+
+    get startProperties() { return this._sCache ??= this._parse(this.eventStartTime); }
+
+    get endProperties() { return this._eCache ??= this._parse(this.eventEndTime);}
+
+    get startYear() { return this.startProperties.year }
+
+    get startMonth() { return this.startProperties.month }
+
+    get startDay() { return this.startProperties.day }
+
+    get startHour() { return this.startProperties.hour }
+
+    get endYear() { return this.endProperties.year }
+
+    get endMonth() { return this.endProperties.month }
+
+    get endDay() { return this.endProperties.day }
+
+    get endHour() { return this.endProperties.hour }
+
 
     /** 这里day是0开始 */
     private shift_table: DaySchedule[] = []; // 行：小时，列：人员
     private member_table: memberTable = {};
-    private eventStartTime: string;
-    private eventEndTime: string;
+    private _eventStartTime: string;
+    private _eventEndTime: string;
     private _days: number; // 总天数
-    private timezone: string;
+    private _timezone: string;
     shiftExchange: ShiftExchange[][] = []; // key: "day","hour"
 
     /**
@@ -85,60 +136,54 @@ export class ShiftTable {
      * @param timezone (可选)指定时区，默认UTC+9
      */
     constructor(startTime: string, endTime: string, timezone: string = 'Asia/Tokyo') {
+        // 基础格式校验 (yyyyMMddHH 长度应为 10)
+        if (startTime.length !== 10 || endTime.length !== 10) {
+            throw new ShiftError("INVALID_TIME_FORMAT", "Invalid time format: expected yyyyMMddHH");
+        }
+
         this.eventStartTime = startTime;
         this.eventEndTime = endTime;
         this.timezone = timezone;
-        this._days = this.calcDays(startTime, endTime);
-        // 初始化表格，全部填充0-24的[null, null, null, null, null]
-        this.shift_table = Array.from({length: this._days}, () =>
-            Array.from({length: 24}, () => ({
+        this.days = this._calcDays();
+
+        // 逻辑校验：结束时间不能早于开始时间
+        if (this.days <= 0 || Number(endTime) - Number(startTime) <= 0) {
+            throw new ShiftError("OUT_OF_BOUNDS", "Shift must last at least one hour");
+        }
+
+        // 表结构初始化
+        this.shift_table = Array.from({ length: this.days }, () =>
+            Array.from({ length: 24 }, () => ({
                 hourColor: 'none',
-                persons: [null, null, null, null, null],
+                persons: Array(5).fill(null) // 使用 fill 保证一致性
             }))
         );
+
+        // 初始化状态标记
         this.markInvalidHours();
     }
 
     private markInvalidHours() {
-        const getHour = (t: string) => Number(t.slice(8, 10));
-
-        const startHour = getHour(this.eventStartTime);
-        const endHour = getHour(this.eventEndTime);
-        const lastDay = this._days - 1;
-
-        // 第一天：startHour 前 invalid
-        for (let h = 0; h < startHour; h++) this.shift_table[0][h].hourColor = "invalid";
-
-        // 最后一天：endHour 后 invalid
-        for (let h = endHour; h < 24; h++) this.shift_table[lastDay][h].hourColor = "invalid";
+        // 第一天：startHour 前 invalid;最后一天：endHour 及后 invalid
+        for (let h = 0; h < this.startHour; h++) this.shift_table[0][h].hourColor = "invalid";
+        for (let h = this.endHour; h < 24; h++) this.shift_table[this.days - 1][h].hourColor = "invalid";
     }
 
 
     /**
      * 计算活动跨越的天数
-     * @param startTime 活动开始时间 yyyyMMddHH
-     * @param endTime 活动结束时间 yyyyMMddHH
      * @return 活动跨越的天数
      * @private
      */
-    private calcDays(startTime: string, endTime: string): number {
-        // 取 yyyyMMdd
-        const sY = Number(startTime.slice(0, 4));
-        const sM = Number(startTime.slice(4, 6)) - 1;
-        const sD = Number(startTime.slice(6, 8));
+    private _calcDays(): number {
+        const { year: sY, month: sM, day: sD } = this.startProperties;
+        const { year: eY, month: eM, day: eD } = this.endProperties;
 
-        const eY = Number(endTime.slice(0, 4));
-        const eM = Number(endTime.slice(4, 6)) - 1;
-        const eD = Number(endTime.slice(6, 8));
-
-        // 用纯 UTC 日期构建，不受本地时区影响
-        const sUTC = Date.UTC(sY, sM, sD);
-        const eUTC = Date.UTC(eY, eM, eD);
-
-        // 计算天数差 + 1
-        const diff = Math.floor((eUTC - sUTC) / (24 * 3600 * 1000)) + 1;
-
-        return diff;
+        // 使用 Date.UTC 规避时区干扰，纯粹计算日期差
+        const start = Date.UTC(sY, sM - 1, sD);
+        const end = Date.UTC(eY, eM - 1, eD);
+        // 864e5是一天的毫秒数
+        return Math.floor((end - start) / 864e5) + 1;
     }
 
 
@@ -150,34 +195,22 @@ export class ShiftTable {
      * @param onlyNone
      */
     private normalizeHour(dayIndex: number, startHour: number, endHour: number, onlyNone = true): number[] {
-        // 24 → 0
-        if (startHour === 24) startHour = 0;
-        // 0 → 24
-        if (endHour === 0) endHour = 24;
+        const s = startHour === 24 ? 0 : startHour, e = endHour === 0 ? 24 : endHour;
 
-        // 本天活动可用时间的区间（不裁剪，但用来判断合法性）
-        const dStart = (dayIndex === 0) ? Number(this.eventStartTime.slice(8, 10)) : 0;
-        const dEnd = (dayIndex === this._days - 1) ? Number(this.eventEndTime.slice(8, 10)) : 24;
+        // 获取当天活动起止小时
+        const dS = dayIndex === 0 ? this.startHour : 0;
+        const dE = dayIndex === this.days - 1 ? this.endHour : 24;
 
-        // 完整检查：若 start/end 任意一点超出活动范围 → 整段取消
-        if (startHour < dStart || endHour > dEnd) {
+        // 范围检查
+        if (s < dS || e > dE) return [];
+
+        // 冲突检查：利用 every 替代 for 循环
+        const table = this.shift_table[dayIndex];
+        if (onlyNone && !Array.from({ length: e - s }, (_, i) => table[s + i]).every(h => h.hourColor === 'none'))
             return [];
-        }
 
-        if (onlyNone){
-            // 检查每个小时 color 是否都是 'none'
-            for (let h = startHour; h < endHour; h++) {
-                if (this.shift_table[dayIndex][h].hourColor !== 'none') {
-                    return []; // 冲突 → 整段取消
-                }
-            }
-        }
-
-        // 全部合法 → 返回完整小时数组
-        const hours: number[] = [];
-        for (let h = startHour; h < endHour; h++) hours.push(h);
-
-        return hours;
+        // 生成结果数组
+        return Array.from({ length: e - s }, (_, i) => s + i);
     }
 
     setRanking(name: string, ranking: Ranking) {
@@ -188,39 +221,27 @@ export class ShiftTable {
     /**
      * 添加班表人员（返回成功/失败小时列表）
      */
-    addShift(dayIndex: number, startHour: number, endHour: number, person: string): { success: number[], failed: number[] } {
-        const hours = this.normalizeHour(dayIndex, startHour, endHour);
-        if (!hours?.length) {
-            return {
-                success: [],
-                failed: [],
-            };
-        }
+    addShift(dayIndex: number, startHour: number, endHour: number, person: string): {
+        success: number[],
+        failed: number[]
+    } {
+        const hours = this.normalizeHour(dayIndex, startHour, endHour), d = this.shift_table[dayIndex];
+        const res = { success: [] as number[], failed: [] as number[] };
+        if (!hours?.length) return res;
 
-        const d = this.shift_table[dayIndex];
-        const success: number[] = [];
-        const failed: number[] = [];
-
-        for (let h of hours) {
-            const idx = d[h].persons.indexOf(null);
-
-            // 已满 / 存在同一人 → 放入 failed
-            if (idx === -1 || d[h].persons.includes(person)) {
-                failed.push(h);
-                continue;
+        hours.forEach(h => {
+            const p = d[h].persons, idx = p.indexOf(null);
+            // 判定：无空位 或 已存在该人 则失败
+            if (idx === -1 || p.includes(person)) {
+                res.failed.push(h);
+            } else {
+                p[idx] = person;
+                res.success.push(h);
             }
+        });
 
-            // 可以添加
-            d[h].persons[idx] = person;
-            success.push(h);
-        }
-
-        // 有成功才调整轨道
-        if (success.length) {
-            this.adjustDay(dayIndex);
-        }
-
-        return { success, failed };
+        if (res.success.length) this.adjustDay(dayIndex);
+        return res;
     }
 
 
@@ -233,18 +254,18 @@ export class ShiftTable {
      * @return 返回该人员被删除的所有小时列表
      */
     delShift(dayIndex: number, startHour: number, endHour: number, person: string): number[] {
-        const hours = this.normalizeHour(dayIndex, startHour, endHour);
-        const d = this.shift_table[dayIndex];
-        const removedHours: number[] = [];
+        const hours = this.normalizeHour(dayIndex, startHour, endHour), d = this.shift_table[dayIndex];
+        const removed: number[] = [];
 
-        for (const h of hours) {
-            const idx = d[h].persons.indexOf(person);
-            if (idx !== -1) {
-                d[h].persons[idx] = null;  // 恢复为空位
-                removedHours.push(h);      // 记录删除的小时
+        hours?.forEach(h => {
+            const i = d[h].persons.indexOf(person);
+            if (i !== -1) {
+                d[h].persons[i] = null;
+                removed.push(h);
             }
-        }
-        return removedHours;
+        });
+
+        return removed;
     }
 
     /**
@@ -256,37 +277,32 @@ export class ShiftTable {
      * @param toPerson 替换成的人
      * @returns { success: number[], failed: number[] } 成功/失败的小时列表
      */
-    exchangeShift(dayIndex: number, startHour: number, endHour: number, fromPerson: string, toPerson: string): { success: number[], failed: number[] } {
-        const hours = this.normalizeHour(dayIndex, startHour, endHour);
-        if (!hours?.length) return { success: [], failed: [] };
+    exchangeShift(dayIndex: number, startHour: number, endHour: number, fromPerson: string, toPerson: string): {
+        success: number[],
+        failed: number[]
+    } {
+        const hours = this.normalizeHour(dayIndex, startHour, endHour), d = this.shift_table[dayIndex];
+        const res = { success: [] as number[], failed: [] as number[] };
 
-        const d = this.shift_table[dayIndex];
-        const success: number[] = [];
-        const failed: number[] = [];
+        if (!hours?.length) return res;
 
-        for (const h of hours) {
-            const fromIndices = d[h].persons
-                .map((p, idx) => p === fromPerson ? idx : -1)
-                .filter(idx => idx !== -1);
+        hours.forEach(h => {
+            const p = d[h].persons;
+            const i = p.indexOf(fromPerson);
+            if (i === -1) return; // 该小时无此人，跳过
 
-            if (!fromIndices.length) continue;
-
-            for (const idx of fromIndices) {
-                // 检查目标是否已经有 toPerson
-                if (d[h].persons.includes(toPerson)) {
-                    failed.push(h);
-                } else {
-                    d[h].persons[idx] = toPerson;
-                    success.push(h);
-                }
+            // 目标人已在班则失败，否则替换索引位置并记录成功
+            if (p.includes(toPerson)) {
+                res.failed.push(h);
+            } else {
+                p[i] = toPerson;
+                res.success.push(h);
             }
-        }
+        });
 
-        if (success.length) this.adjustDay(dayIndex);
-
-        return { success, failed };
+        if (res.success.length) this.adjustDay(dayIndex);
+        return res;
     }
-
 
 
     /**
@@ -297,39 +313,25 @@ export class ShiftTable {
     renamePerson(oldName: string, newName: string) {
         if (!oldName || !newName || oldName === newName) return;
 
-        // shift_table：所有天、所有小时的人员替换
-        for (let d = 0; d < this._days; d++) {
-            const dayTable = this.shift_table[d];
-            for (let h = 0; h < 24; h++) {
-                const persons = dayTable[h].persons;
-                for (let i = 0; i < persons.length; i++) {
-                    if (persons[i] === oldName) {
-                        persons[i] = newName;
-                    }
-                }
-            }
-        }
+        // 替换 shift_table 中的所有匹配项
+        this.shift_table.forEach(day =>
+            void day.forEach(h => h.persons = h.persons.map(p => p === oldName ? newName : p))
+        );
 
-        // member_table
+        // 迁移成员表权限/等级数据
         if (this.member_table[oldName]) {
             this.member_table[newName] = this.member_table[oldName];
             delete this.member_table[oldName];
         }
 
-        // shiftExchange
-        if (this.shiftExchange) {
-            for (let d = 0; d < this.shiftExchange.length; d++) {
-                const day = this.shiftExchange[d];
-                if (!day) continue;
+        // 替换 shiftExchange 中的记录
+        this.shiftExchange?.forEach(day =>
+            day?.forEach(r => {
+                r.onDuty = r.onDuty.map(n => n === oldName ? newName : n);
+                r.offDuty = r.offDuty.map(n => n === oldName ? newName : n);
+            })
+        );
 
-                for (const record of day) {
-                    record.onDuty = record.onDuty.map(n => n === oldName ? newName : n);
-                    record.offDuty = record.offDuty.map(n => n === oldName ? newName : n);
-                }
-            }
-        }
-
-        // 重新调整轨道
         this.adjustAllDays();
     }
 
@@ -349,15 +351,6 @@ export class ShiftTable {
     }
 
     /**
-     * 获取某天某小时的人员
-     * @param dayIndex 天数
-     * @param hour 开始小时数，时长为1
-     */
-    getPersons(dayIndex: number, hour: number): string[] {
-        return this.shift_table[dayIndex][hour].persons.filter(p => p !== null);
-    }
-
-    /**
      * 获取 shift 交换表
      * @param dayIndex 天数
      */
@@ -373,11 +366,9 @@ export class ShiftTable {
      */
     getMissingCount(dayIndex: number): number[] {
         if (dayIndex < 0 || dayIndex >= this.shift_table.length) return undefined;
-        const dayData = this.shift_table[dayIndex];
-        return dayData.map(block => {
-            if (block.hourColor !== 'none') return 0;
-            return block.persons.filter(p => p === null).length;
-        });
+        return this.shift_table[dayIndex].map(block =>
+            block.hourColor !== 'none' ? 0 : block.persons.filter(p => p === null).length
+        );
     }
 
     /**
@@ -385,67 +376,54 @@ export class ShiftTable {
      * @param dayIndex 可选，导出某一天
      */
     exportSchedule(dayIndex?: number) {
-        const filterBlock = (block: HourBlock) =>
-            block.hourColor !== 'invalid' ? {color: block.hourColor, persons: block.persons} : undefined;
+        const exportSingleDay = (day: number) =>
+            this.shift_table[day].reduce((result, block, h) => {
+                if (block.hourColor !== "invalid") {
+                    result[h] = block;
+                }
+                return result;
+            }, {} as Record<number, HourBlock>);
 
-        // 导出某天
-        const exportSingleDay = (day: number) => {
-            const result: Record<number, { color: HourColor; persons: string[] }> = {};
-            this.shift_table[day].forEach((block, h) => {
-                const filtered = filterBlock(block);
-                if (filtered) result[h] = filtered;
-            });
-            return result;
-        };
+        if (dayIndex !== undefined) return exportSingleDay(dayIndex);
 
-        if (dayIndex !== undefined) {
-            return exportSingleDay(dayIndex);
-        }
-
-        // 导出全部天，递归调用单天导出
-        const result: Record<number, Record<number, { color: HourColor; persons: string[] }>> = {};
-        const exportDays = (d: number) => {
-            if (d >= this._days) return;
+        // 导出全部：用 Array.from 生成索引数组并 reduce 汇总
+        return Array.from({ length: this.days }).reduce((acc, _, d) => {
             const dayResult = exportSingleDay(d);
-            if (Object.keys(dayResult).length > 0) result[d] = dayResult;
-            exportDays(d + 1); // 递归下一天
-        };
-        exportDays(0);
-
-        return result;
+            if (Object.keys(dayResult).length > 0) acc[d] = dayResult;
+            return acc;
+        }, {} as Record<number, Record<number, HourBlock>>);
     }
 
     setEndTime(newEndTime: string) {
-        const newDays = this.calcDays(this.eventStartTime, newEndTime);
-
-        // 当前已有天数
-        const oldDays = this._days;
-
-        // 缩短天数 → 删除多余天
+        // 基础格式校验 (yyyyMMddHH 长度应为 10)
+        if (newEndTime.length !== 10) {
+            throw new ShiftError("INVALID_TIME_FORMAT", "Invalid time format: expected yyyyMMddHH");
+        }
+        // 逻辑校验：结束时间不能早于开始时间
+        else if (Number(newEndTime) - Number(this.eventStartTime) <= 0) {
+            throw new ShiftError("OUT_OF_BOUNDS", "Shift must last at least one hour");
+        }
+        const oldEndH = this.endHour;
+        const oldDays = this.days;
+        this.eventEndTime = newEndTime;
+        const newDays = this._calcDays();
+        this.days = newDays;
+        // 调整天数：缩短则自动截断，延长则填充新天
         if (newDays < oldDays) {
             this.shift_table.splice(newDays);
-        }
-
-        // 延长天数 → 新增天全部 'none'
-        if (newDays > oldDays) {
+        } else {
             for (let d = oldDays; d < newDays; d++) {
                 this.shift_table[d] = Array.from({ length: 24 }, () => ({
-                    hourColor: 'none',
-                    persons: [null, null, null, null, null],
+                    hourColor: 'none', persons: Array(5).fill(null)
                 }));
+            }
+            // 恢复旧结束点后的状态
+            const lastDay = this.shift_table[oldDays - 1];
+            if (lastDay) {
+                for (let h = oldEndH; h < 24; h++) lastDay[h].hourColor = 'none';
             }
         }
 
-        this._days = newDays;
-
-        // 恢复最后一天结束小时后的原本小时为 'none'
-        const lastDayIndex = oldDays - 1;
-        const oldEndHour = Number(this.eventEndTime.slice(8, 10));
-        for (let h = oldEndHour; h < 24; h++) {
-            this.shift_table[lastDayIndex][h].hourColor = 'none';
-        }
-        this.eventEndTime = newEndTime;
-        // 重新标记 invalid
         this.markInvalidHours();
     }
 
@@ -455,18 +433,16 @@ export class ShiftTable {
      */
     adjustDay(dayIndex: number) {
         const d = this.shift_table[dayIndex];
-        let h = 0;
-        while (h < 23) {
+        for (let h = 0; h < 23; h++) {
+            const np = d[h + 1].persons; // next hour
             // 遍历 h 的 5 条轨道
-            const swapped = d[h].persons.some((person, trackA) => {
-                if (!person) return false;
-                const nh = h + 1; // next hour
-                const trackB = d[nh].persons.indexOf(person);
-                if (trackB === -1 || trackA === trackB) return false; // 无需调整轨道
-                [d[nh].persons[trackA], d[nh].persons[trackB]] = [d[nh].persons[trackB], d[nh].persons[trackA]];
+            const swapped = d[h].persons.some((p, i) => {
+                const j = p ? np.indexOf(p) : -1;
+                if (j === -1 || i === j) return false;
+                [np[i], np[j]] = [np[j], np[i]];
                 return true;
             });
-            if (!swapped) h++;
+            if (swapped) h--;
         }
     }
 
@@ -474,35 +450,27 @@ export class ShiftTable {
      * 调整所有天的轨道
      */
     adjustAllDays() {
-        this.shift_table.forEach((_, day) => this.adjustDay(day));
+        this.shift_table.forEach((_, day) => void this.adjustDay(day));
     }
 
     // 生成整个班表的 shiftExchange
     generateShiftExchange() {
-        this.shiftExchange = [];
+        this.shiftExchange = Array.from({ length: this.days }, (_, d) =>
+            this.shift_table[d].map((block, h) => {
+                // 获取前一小时：如果是 (d:0, h:0) 则为空数组
+                const prev = h > 0 ? this.shift_table[d][h - 1]
+                    : d > 0 ? this.shift_table[d - 1][23]
+                        : { persons: [] };
 
-        for (let d = 0; d < this._days; d++) {
-            const daySchedule = this.shift_table[d];
-            this.shiftExchange[d] = [];
+                const curP = block.persons.filter(Boolean);
+                const preP = prev.persons.filter(Boolean);
 
-            for (let h = 0; h < daySchedule.length; h++) {
-                const block = daySchedule[h];
-
-                const prevPersons = new Set(
-                    h > 0
-                        ? daySchedule[h - 1].persons.filter(Boolean)
-                        : d > 0
-                            ? this.shift_table[d - 1][23].persons.filter(Boolean)
-                            : []
-                );
-                const curPersons = new Set(block.persons.filter(Boolean));
-
-                this.shiftExchange[d][h] = {
-                    onDuty: [...curPersons].filter(p => !prevPersons.has(p)),
-                    offDuty: [...prevPersons].filter(p => !curPersons.has(p))
+                return {
+                    onDuty: curP.filter(p => !preP.includes(p)),
+                    offDuty: preP.filter(p => !curP.includes(p))
                 };
-            }
-        }
+            })
+        );
     }
 
     /**
@@ -510,68 +478,25 @@ export class ShiftTable {
      * @param dayIndex 第几天
      */
     renderShiftExchangeHTML(dayIndex: number): string {
-        // 从 10 位数字字符串解析年月日
-        const startStr = String(this.eventStartTime).padStart(10, '0'); // 例如 '2025121015'
-        const year = Number(startStr.slice(0, 4));
-        const month = Number(startStr.slice(4, 6)) - 1;
-        const day = Number(startStr.slice(6, 8));
-
-        // 构造当天 Date 对象
-        const dayDate = new Date(year, month, day + dayIndex);
-
-        const options: Intl.DateTimeFormatOptions = {
+        const s = this.startProperties;
+        const date = new Date(Date.UTC(s.year, s.month - 1, s.day + dayIndex, 12));
+        const dateStr = date.toLocaleDateString("ja-JP", {
             month: "numeric",
             day: "numeric",
             weekday: "short",
-            timeZone: this.timezone
-        };
-        const dateStr = dayDate.toLocaleDateString("ja-JP", options).replace("曜日", "");
-        const dayLabel = `${dayIndex + 1}日目`;
+            timeZone: "UTC"
+        }).replace("曜日", "");
+        const exchange = this.getShiftExchange(dayIndex) || [];
 
-        let html = `
-<style>
-table.shift-exchange { border-collapse: collapse; margin: 10px 0; font-size: 12px; table-layout: fixed; width: auto; }
-.shift-exchange th, .shift-exchange td { border: 1px solid #999; padding: 2px 4px; text-align: center; white-space: nowrap; }
-.col-hour { width: 55px; }
-.col-person { width: 120px; }
-.hour { font-weight: bold; background: #eef; }
-.date-header { text-align: left; font-weight: bold; padding: 4px 8px; }
-</style>
+        // 表格上下班内容
+        const rows = Array.from({ length: 24 }, (_, h) => {
+            const valid = (hour: number) => (this.shift_table[dayIndex]?.[hour]?.hourColor ?? 'invalid') !== 'invalid';
+            if (!valid(h) && !valid(h - 1)) return "";
+            const { onDuty = [], offDuty = [] } = exchange[h] || {};
+            return `<tr><td class="hour col-hour">${String(h).padStart(2, '0')}:00</td><td>${onDuty.join(", ")}</td><td>${offDuty.join(", ")}</td></tr>`;
+        }).join("");
 
-<table class="shift-exchange">
-  <tr><th class="date-header" style="background: #D0E0E3" colspan="3">${dateStr} (${dayLabel}) シフト交換</th></tr>
-  <tr>
-    <th class="col-hour">開始</th>
-    <th class="col-person">入</th>
-    <th class="col-person">出</th>
-  </tr>
-`;
-
-        const dayExchange = this.getShiftExchange(dayIndex) || [];
-
-        for (let h = 0; h < 24; h++) {
-            const ex = dayExchange[h] || { onDuty: [], offDuty: [] };
-            const onDuty = ex.onDuty.join(", ");
-            const offDuty = ex.offDuty.join(", ");
-
-            html += `<tr>
-<td class="hour col-hour">${String(h).padStart(2,'0')}:00</td>
-<td class="col-person">${onDuty}</td>
-<td class="col-person">${offDuty}</td>
-</tr>`;
-        }
-
-        html += `</table>`;
-        return html;
-    }
-
-    /**
-     * 使用 Puppeteer 渲染 shiftExchange 为图片
-     * @param ctx Koishi 上下文
-     * @param dayIndex 第几天
-     */
-    async renderShiftExchangeImage(ctx: Context, dayIndex: number) {
-        const html = `
+        return `
 <html>
 <head>
 <style>
@@ -581,168 +506,126 @@ table.shift-exchange { border-collapse: collapse; margin: 10px 0; font-size: 12p
 </style>
 </head>
 <body>
-${this.renderShiftExchangeHTML(dayIndex)}
-</body>
-</html>
-`;
-        // ctx.puppeteer.render 返回图片的 buffer
-        return ctx.puppeteer.render(html);
+<style>
+  .shift-exchange { border-collapse: collapse; font-size: 12px; }
+  .shift-exchange th, .shift-exchange td { border: 1px solid #999; padding: 2px 4px; text-align: center; }
+  .hour { font-weight: bold; background: #eef; width: 55px; }
+  .col-p { width: 120px; white-space: nowrap; }
+</style>
+<table class="shift-exchange">
+  <tr><th colspan="1" style="background:#D0E0E3;text-align:center;padding:2px 8px">${this.days}日間</th>
+  <th colspan="2" style="background:#D0E0E3;text-align:center;padding:2px 8px">${dateStr} (${dayIndex + 1}日目) シフト交换</th></tr>
+  <tr style="background:#f4f4f4"><th>時間</th><th class="col-p">入</th><th class="col-p">出</th></tr>
+  ${rows}
+</table></body>
+</html>`;
     }
 
+    /**
+     * 使用 Puppeteer 渲染 shiftExchange 为图片
+     * @param ctx Koishi 上下文
+     * @param dayIndex 第几天
+     */
+    async renderShiftExchangeImage(ctx: Context, dayIndex: number) {
+        return ctx.puppeteer.render(this.renderShiftExchangeHTML(dayIndex));
+    }
+
+    /**
+     * 渲染 shift 表为 HTML（24 小时形式）
+     * @param dayIndex 第几天
+     */
     renderShiftHTML(dayIndex: number): string {
-        if (dayIndex < 0 || dayIndex >= this._days) {
-            throw new Error(`Day ${dayIndex} out of range`);
-        }
+        if (dayIndex < 0 || dayIndex >= this.days) throw new ShiftError("OUT_OF_BOUNDS", `Day ${dayIndex} out of range`);
 
-        const dayData = this.shift_table[dayIndex];
-
-        // 将 startTime 10位字符串的年月日部分 + dayIndex 推算日期
-        const startYYYY = Number(String(this.eventStartTime).slice(0, 4));
-        const startMM = Number(String(this.eventStartTime).slice(4, 6)) - 1;
-        const startDD = Number(String(this.eventStartTime).slice(6, 8));
-
-        // 计算当天日期
-        const dayDateObj = new Date(startYYYY, startMM, startDD + dayIndex);
-        const options: Intl.DateTimeFormatOptions = {
+        const s = this.startProperties;
+        const date = new Date(Date.UTC(s.year, s.month - 1, s.day + dayIndex, 12));
+        const dateStr = date.toLocaleDateString("ja-JP", {
             month: "numeric",
             day: "numeric",
             weekday: "short",
-            timeZone: this.timezone
-        };
-        let dateStr = dayDateObj.toLocaleDateString("ja-JP", options);
-        // 去掉“曜日”，保留短星期
-        dateStr = dateStr.replace("曜日", "");
+            timeZone: "UTC"
+        }).replace("曜日", "");
+        const headerOrder = RANKINGS;
+        const formatH = (h: number) => `${String(h % 24).padStart(2, "0")}:00`;
 
-        const dayLabel = `${dayIndex + 1}日目`;
+        // 渲染行逻辑
+        const rows = this.shift_table[dayIndex].map((b, h) => {
+            if (b.hourColor === "invalid") return ""; // invalid 行不渲染
+            const isBlackOrGray = ["black", "gray"].includes(b.hourColor),
+                rowBg = b.hourColor === "black" ? SHIFT_COLORS.BLACK : SHIFT_COLORS.GRAY;
+            const [nb, pb] = [this.shift_table[dayIndex][h + 1], this.shift_table[dayIndex][h - 1]];
+            const nextIsBlackOrGray = nb?.hourColor === "black" || nb?.hourColor === "gray";
+            const nP = (h === 23 || nextIsBlackOrGray) ? [] : nb?.persons?.filter(Boolean) || [],
+                pP = (h === 0) ? [] : pb?.persons?.filter(Boolean) || [];
 
+            // 样式辅助：处理隐藏行的边框连贯性
+            const hiddenStyle = (i: number) => isBlackOrGray
+                ? `background:${rowBg};color:${rowBg};border-bottom-color:${nextIsBlackOrGray ? 'transparent' : '#999'};border-right-color:${i === 4 ? '#999' : 'transparent'};`
+                : "";
 
-        const formatHour = (h: number) => `${String(h).padStart(2, "0")}:00`;
+            // @多少人
+            let cells = `<td class="col-null" style="${isBlackOrGray ? hiddenStyle(-1) : `background:${b.persons.filter(p => !p).length ? SHIFT_NOT_COMPLETE_COLOR : SHIFT_COMPLETED_COLOR}`}">${isBlackOrGray ? '' : `@${b.persons.filter(p => !p).length}`}</td>`;
 
-        const getSymbol = (name: string | null) => {
-            if (!name) return "";
-            const rank = this.member_table[name];
-            return rank ? symbolMap[rank] ?? "" : "";
-        };
+            cells += b.persons.map((p, i) => {
+                const r = p ? this.member_table[p] : null;
+                const rStyle = isBlackOrGray ? hiddenStyle(-1) : `background:${(r && runnerColor[r]) || '#EFEFEF'}`;
+                // 位运算映射颜色：[单小时, 开始, 结束, 持续]
+                const pStyle = isBlackOrGray ? hiddenStyle(i) : (p ? `background:${SHIFT_PLAYER_COLORS[(+pP.includes(p) << 1) | +nP.includes(p)]}` : "");
+                // 每个位置生成一个player颜色+player名字                非灰黑 && 有目标顺位 && 标记不被颜色覆盖
+                return `<td class="col-symbol" style="${rStyle}">${!isBlackOrGray && r && !coverRunnerColor && SYMBOL_MAP[r] || ""}</td>
+                    <td class="col-person" style="${pStyle}">${!isBlackOrGray && p || ''}</td>`;
+            }).join("");
+            // | 开始时间 | 结束时间 | ...班表主体 |
+            return `<tr><td class="hour">${formatH(h)}</td><td class="hour">${formatH(h + 1)}</td>${cells}</tr>`;
+        }).join("");
 
-        let html = `
+        // 组合完整 HTML
+        return `
+<html><head><style>
+  body { margin: 0;padding: 5px 15px;display: inline-block }
+  table { border-collapse: collapse;font-size: 20px;font-weight: bold }
+</style></head>
+<body>
 <style>
-    table.shift-day { border-collapse: collapse; margin: 10px 0; font-size: 12px; table-layout: fixed; width: auto; }
-    .shift-day th, .shift-day td { border: 1px solid #999; padding: 2px 4px; text-align: center; white-space: nowrap; }
-    .col-time { width: 55px; }
-    .col-null { width: 20px; }
-    .col-symbol { width: 7px; }
-    .col-person { width: 80px; }
-    .hour { font-weight: bold; background: #eef; }
-    .date-header { text-align: left; font-weight: bold; padding: 4px 8px; }
+    .shift-day{border-collapse:collapse;font-size:12px;text-align:center;table-layout:fixed}
+    .shift-day th, .shift-day td{border:1px solid #999;padding:2px 4px;white-space:nowrap}
+    .hour{font-weight:bold;background:#eef;width:55px}.col-null{width:20px}.col-symbol{width:7px}.col-person{width:80px}
 </style>
-
 <table class="shift-day">
-<tr><th class="date-header" style="background: #D0E0E3" colspan="${3 + 5 * 2}">${dateStr} (${dayLabel})</th></tr>
-<tr>
-    <th class="col-time">開始</th>
-    <th class="col-time">終了</th>
-    <th class="col-null">残</th>
-`;
-
-        const headerOrder: Ranking[] = ["main", "10", "50", "100", "1000"];
-        for (const r of headerOrder) {
-            html += `<th style="background: ${runnerColor[r]}">${symbolMap[r]}</th><th class="col-person">${r.replace('main','メイン')}ランナー</th>`;
-        }
-        html += `</tr>`;
-
-        for (let h = 0; h < 24; h++) {
-            const block = dayData[h];
-            if (block.hourColor === "invalid") continue;
-
-            const persons = block.persons;
-            const nullCount = persons.filter(p => p === null).length;
-            const isHiddenRow = block.hourColor === "black" || block.hourColor === "gray";
-            const [nextBlock, preBlock] = [dayData.at(h + 1), dayData.at(h - 1)];
-            const blockIsHiddenRow = (...blocks: any[]) => blocks.map(b => b?.hourColor === "black" || b?.hourColor === "gray");
-            const [nextIsHiddenRow, preIsHiddenRow] = blockIsHiddenRow(nextBlock, preBlock);
-            const nextPeople = h === 23 || nextIsHiddenRow ? [] : nextBlock?.persons?.filter(Boolean) || [];
-            const prePeople = h === 0 || preIsHiddenRow ? [] : preBlock?.persons?.filter(Boolean) || [];
-            const rowBg = block.hourColor === "black" ? "#000" : block.hourColor === "gray" ? "#B7B7B7" : "";
-
-            html += `<tr>`;
-            html += `<td class="hour col-time">${formatHour(h)}</td>`;
-            html += `<td class="hour col-time">${formatHour(h + 1)}</td>`;
-
-            let nullStyle = `background:${shiftNotCompleteColor}`;
-            if (isHiddenRow) {
-                nullStyle = `background:${rowBg}; color:${rowBg}; border-bottom-color:${nextIsHiddenRow ? 'transparent':'#999'}; border-right-color:transparent;`;
-            } else if (nullCount === 0) {
-                nullStyle = `background:${shiftCompleteColor}`;
-            }
-            html += `<td class="col-null null-counter" style="${nullStyle}">${isHiddenRow ? '' : '@'+nullCount}</td>`;
-
-            for (let i = 0; i < persons.length; i++) {
-                const p = persons[i];
-                let symbol = getSymbol(p);
-                let symbolStyle = "background:#EFEFEF";
-                if (isHiddenRow) {
-                    symbolStyle = `background:${rowBg}; color:${rowBg}; border-bottom-color:${nextIsHiddenRow ? 'transparent':'#999'}; border-right-color:transparent;`;
-                    symbol = "";
-                } else if (p) {
-                    const rank = this.member_table[p];
-                    if (rank && runnerColor[rank]) {
-                        symbolStyle = `background:${runnerColor[rank]}`;
-                        if (coverRunnerColor) symbol = "";
-                    }
-                }
-                html += `<td class="col-symbol" style="${symbolStyle}">${symbol}</td>`;
-
-                const personText = isHiddenRow ? '' : p ?? '';
-                const personStyle = isHiddenRow
-                    ? `background:${rowBg}; color:${rowBg}; border-bottom-color:${nextIsHiddenRow ? 'transparent':'#999'}; border-right-color:${i === persons.length-1 ? '#999':'transparent'};`
-                    : p?.length
-                        ? prePeople.includes(p)
-                            ? nextPeople.includes(p)
-                                ? `background:${shiftColor.running}`
-                                : `background:${shiftColor.end}`
-                            : nextPeople.includes(p)
-                                ? `background:${shiftColor.start}`
-                                : `background:${shiftColor.oneHour}`
-                        : '';
-                html += `<td class="col-person" style="${personStyle}">${personText}</td>`;
-            }
-
-            html += `</tr>`;
-        }
-
-        html += `</table>`;
-        return html;
+    <tr>
+    <th colspan="1" style="background:#D0E0E3;text-align:center;padding:2px 8px">${this.startMonth}.${this.startDay}</th>
+    <th colspan="1" style="background:#D0E0E3;text-align:center;padding:2px 8px">${this.endMonth}.${this.endDay}</th>
+    <th colspan="11" style="background:#D0E0E3;text-align:center;padding:2px 8px">${dateStr} (${dayIndex + 1}日目)</th></tr>
+    <tr style="background:#eee"><th>開始</th><th>終了</th><th>残</th>${headerOrder.map(r => `<th style="background:${runnerColor[r]}">${SYMBOL_MAP[r]}</th><th>${r.replace('main', 'メイン')}ランナー</th>`).join("")}</tr>
+    ${rows}
+</table></body></html>`;
     }
 
+    /**
+     * 使用 Puppeteer 渲染 shift 为图片
+     * @param ctx Koishi 上下文
+     * @param dayIndex 第几天
+     */
     async renderShiftImage(ctx: Context, dayIndex: number) {
-        return ctx.puppeteer.render(`
-<html>
-<head>
-<style>
-  body {
-    margin: 0;
-    padding: 5px 15px;
-    display: inline-block;
-  }
-  table {
-    border-collapse: collapse;
-    font-size: 20px;
-    font-weight: bold;
-  }
-</style>
-</head>
-<body>
-  ${this.renderShiftHTML(dayIndex)}
-</body>
-</html>
-`)
+        return ctx.puppeteer.render(this.renderShiftHTML(dayIndex));
+    }
+}
+
+// 通用的业务错误基类
+export class ShiftError extends Error {
+    constructor(
+        public code: ShiftErrorCodes,
+        message: string
+    ) {
+        super(message);
+        this.name = 'ShiftError';
     }
 }
 
 
 /*
 
-const shiftTable = new ShiftTable('202511111400', '202511132000');
+const shiftTable = new ShiftTable('2025111114', '2025111320');
 
 shiftTable.setRanking('Main', 'main')
 shiftTable.setRanking('Alice', '10')
@@ -757,7 +640,7 @@ shiftTable.addShift(1, 5, 7, 'Dod');
 shiftTable.addShift(1, 5, 7, 'Err');
 shiftTable.addShift(1, 5, 7, 'Faa');
 // shiftTable.addShift(0, 4, 8, 'Grok');
-// shiftTable.setShiftColor(1, 4, 6, 'black');
+shiftTable.setShiftColor(1, 4, 6, 'black');
 
 
 // console.dir(shiftTable.exportSchedule(), {depth: null})

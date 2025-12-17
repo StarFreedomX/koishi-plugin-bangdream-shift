@@ -7,8 +7,8 @@
 ## 注意事项
 
 * 本项目某些功能需要部署
-[StarFreedomX的tsugu后端](https://github.com/StarFreedomX/tsugu-bangdream-bot/tree/starfx-main)
-才可正常运行
+  [StarFreedomX的tsugu后端](https://github.com/StarFreedomX/tsugu-bangdream-bot/tree/starfx-main)
+  才可正常运行
 
 ### TODO LIST
 
@@ -48,17 +48,21 @@
 ## 2. 👥 排班操作
 
 ### ➕ 添加排班（add-shift）
+
 - 为指定玩家在某天的某一时间段添加排班
 - 自动检查冲突
 - 自动持久化保存
 
 ### ➖ 删除排班（del-shift）
+
 - 删除玩家在某天特定时段的班次
 
 ### 🔁 替换排班（exchange-shift）
+
 - 将某一玩家的排班整体替换为另一名玩家
 
 ### ✏️ 改名（rename-person）
+
 - 修改所有相关排班中的名字
 
 ---
@@ -66,16 +70,19 @@
 ## 3. 🎨 班表查询
 
 ### 🖼️ show-shift
+
 - 返回指定天的班表
 - 使用 puppeteer 截图
 - 返回为表格图片
 
 ### 🖼️ show-shift-exchange
+
 - 返回指定天的交换表
 - 使用 puppeteer 截图
 - 返回为表格图片
 
 ### 🖼️ show-shift-left
+
 - 显示 **每个小时缺多少人**
 - 自动将结果汇总为连续范围（如 `0-5 @2`）
 
@@ -95,6 +102,7 @@
 ## 5. 👑 目标顺位管理
 
 ### ✔ 设置排名（set-runner）
+
 可设置玩家为：
 
 - main
@@ -110,13 +118,16 @@
 ## 6. 🔗 班表多群共享
 
 ### 📤 share-shift
+
 - 将班表授权给其他群使用
 - 可以跨群共享同一张班表
 
 ### 📑 shift-group-ls
+
 - 查看所有拥有权限的群及其是否正在使用该班表
 
 ### 🗑 revoke-shift
+
 - 取消某个群对班表的管理权限
 
 > 【注意】只有班表 owner 才能进行共享和撤销。
@@ -126,6 +137,7 @@
 ## 7. ⚙ 班表结构管理
 
 ### ⏱ 调整班表结束时间（set-shift-ending）
+
 - 调整班表天数
 - 自动扩展 / 收缩天数
 - 自动维护 invalid 区域
@@ -135,12 +147,14 @@
 # 🚗 车速定时推送功能
 
 ## 📡 interval-speed-on
+
 - 开启自动车速查询
 - 支持跟踪服务器
 - 支持比对指定玩家
 - 自动定时推送结果到当前频道
 
 ## 📴 interval-speed-off
+
 - 关闭定时推送
 
 ---
@@ -174,3 +188,4 @@
 | `1.1.1` | 修复着色逻辑中跳过非none导致无法恢复的bug |
 | `1.1.1` | 涂色指令添加day提示              |
 | `1.2.0` | 优化管理判断，新增繁中翻译            |
+| `1.2.1` | 重构代码,discord权限码使用BigInt  |
