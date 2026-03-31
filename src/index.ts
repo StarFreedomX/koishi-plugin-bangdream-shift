@@ -1,6 +1,6 @@
 import { Context, Schema, Session, Logger } from 'koishi'
 import * as utils from "./utils";
-import { HourColor, ShiftTable, Ranking, ShiftError } from "./shift";
+import { HourColor, ShiftTable, Ranking, ShiftError, GoogleSheetOptions, GoogleSheetAuth } from "./shift";
 import {} from 'koishi-plugin-puppeteer'
 import {} from '@koishijs/plugin-adapter-discord'
 
@@ -51,6 +51,10 @@ export interface Config {
     defaultTimezone: string,
     defaultServer: Server,
     backendUrl: string,
+    googleAuth?: {
+        client_email: string;
+        private_key: string;
+    };
 }
 
 export enum Server {
@@ -68,7 +72,11 @@ export const Config = Schema.object({
         Schema.const(Server.tw).description('tw'),
         Schema.const(Server.kr).description('kr')
     ]).default(Server.jp).description('默认服务器'),
-    backendUrl: Schema.string().default('http://localhost:3000').description('后端服务器地址')
+    backendUrl: Schema.string().default('http://localhost:3000').description('后端服务器地址'),
+    googleAuth: Schema.object({
+        client_email: Schema.string().description('Google Service Account Client Email'),
+        private_key: Schema.string().description('Google Service Account Private Key')
+    }).description('Google Sheets认证信息')
 })
 
 export async function apply(ctx: Context, cfg: Config) {
@@ -101,7 +109,14 @@ export async function apply(ctx: Context, cfg: Config) {
     if (cfg.openShift) {
         // 创建班表，名字不能和已有的重复
         ctx.command('create-shift <name:string> <start:string> <end:string>')
-            .action(async ({ session }, name, start, end) => {
+            .option('spreadsheetId', '-s <spreadsheetId:string>(可选)谷歌表格ID，提供后将从谷歌表格同步数据')
+            .option('sheetName', '--sheet <sheetName:string> (可选)谷歌选择工作表，默认マーク式')
+            .option('startCell', '--start <startCell:string> (可选)谷歌表格排版开始单元格')
+            .option('colInterval', '--col <colInterval:number> (可选)谷歌表格的列间隔')
+            .option('rowInterval', '--row <rowInterval:number> (可选)谷歌表格的行间隔')
+            .option('dayInterval', '--day <dayInterval:number> (可选)谷歌表格的日间隔')
+            .option('startHour', '--hour <startHour:number>　(可选)谷歌表格的开始小时')
+            .action(async ({ session, options }, name, start, end) => {
                 bdShiftLogger.info(session.userId, 'try to create shift: ', name, start, end);
                 if (!await canGrant(session)) return session.text('permission-denied');
                 if (!start || !end) return session.text('lack', { params: 'start/end' });
@@ -114,7 +129,22 @@ export async function apply(ctx: Context, cfg: Config) {
                     [startTs, endTs] = [nearestStart, nearestEnd]
 
                     // 创建 shiftTable 实例
-                    const table = new ShiftTable(startTs, endTs, cfg.defaultTimezone)
+                    let table: ShiftTable;
+                    if (options.spreadsheetId) {
+                        if (!cfg.googleAuth) return session.text('noGoogleAuth');
+                        const gOptions: GoogleSheetOptions = {
+                            spreadsheetId: options.spreadsheetId,
+                            sheetName: options.sheetName,
+                            startCell: options.startCell,
+                            colInterval: options.colInterval,
+                            rowInterval: options.rowInterval,
+                            dayInterval: options.dayInterval,
+                            startHour: options.startHour,
+                        };
+                        table = await ShiftTable.create(startTs, endTs, cfg.defaultTimezone, gOptions, cfg.googleAuth);
+                    } else {
+                        table = new ShiftTable(startTs, endTs, cfg.defaultTimezone);
+                    }
 
                     // 插入班表
                     const bangdream_shift = await ctx.database.create('bangdream_shift', {
@@ -196,7 +226,7 @@ export async function apply(ctx: Context, cfg: Config) {
                     }
                     throw e;
                 }
-                const row = await loadShift(ctx, curr.shift_id)
+                const row = await loadShift(ctx, curr.shift_id, cfg.googleAuth)
                 row.shiftTable.setEndTime(endTs)
                 await saveShift(ctx, row)
                 return session.text('.success', { name: row.name })
@@ -266,7 +296,7 @@ export async function apply(ctx: Context, cfg: Config) {
                 const curr = await getCurrentShift(ctx, getGid(session));
                 if (!curr) return session.text('noGroups');
 
-                const row = await loadShift(ctx, curr.shift_id);
+                const row = await loadShift(ctx, curr.shift_id, cfg.googleAuth);
                 if (day <= 0 || day > row.shiftTable.days) return session.text('outOfDay');
 
                 // 收集所有时间段
@@ -284,7 +314,7 @@ export async function apply(ctx: Context, cfg: Config) {
 
                 // 逐段插入
                 for (const [s, e] of segments) {
-                    const { success, failed } = row.shiftTable.addShift(day - 1, s, e, person);
+                    const { success, failed } = await row.shiftTable.addShift(day - 1, s, e, person);
                     allSuccess.push(...success);
                     allFailed.push(...failed);
                 }
@@ -327,7 +357,7 @@ export async function apply(ctx: Context, cfg: Config) {
                 const curr = await getCurrentShift(ctx, getGid(session));
                 if (!curr) return session.text('noGroups');
 
-                const row = await loadShift(ctx, curr.shift_id);
+                const row = await loadShift(ctx, curr.shift_id, cfg.googleAuth);
                 if (day <= 0 || day > row.shiftTable.days) return session.text('outOfDay');
 
                 // 收集所有时间段
@@ -345,7 +375,7 @@ export async function apply(ctx: Context, cfg: Config) {
 
                 // 逐段删除
                 for (const [s, e] of segments) {
-                    const removed = row.shiftTable.delShift(day - 1, s, e, person);
+                    const removed = await row.shiftTable.delShift(day - 1, s, e, person);
                     removed.forEach(h => void allRemoved.add(h));
                 }
 
@@ -380,7 +410,7 @@ export async function apply(ctx: Context, cfg: Config) {
                 const curr = await getCurrentShift(ctx, getGid(session));
                 if (!curr) return session.text('noGroups');
 
-                const row = await loadShift(ctx, curr.shift_id);
+                const row = await loadShift(ctx, curr.shift_id, cfg.googleAuth);
                 if (day <= 0 || day > row.shiftTable.days) return session.text('outOfDay');
 
                 // 收集所有时间段
@@ -398,7 +428,7 @@ export async function apply(ctx: Context, cfg: Config) {
 
                 // 逐段替换
                 for (const [s, e] of segments) {
-                    const { success, failed } = row.shiftTable.exchangeShift(day - 1, s, e, oldName, newName);
+                    const { success, failed } = await row.shiftTable.exchangeShift(day - 1, s, e, oldName, newName);
                     allSuccess.push(...success);
                     allFailed.push(...failed);
                 }
@@ -437,7 +467,7 @@ export async function apply(ctx: Context, cfg: Config) {
                 const curr = await getCurrentShift(ctx, getGid(session));
                 if (!curr) return session.text('noGroups');
 
-                const row = await loadShift(ctx, curr.shift_id);
+                const row = await loadShift(ctx, curr.shift_id, cfg.googleAuth);
                 // 校验天数范围（1 到 n）
                 if (day <= 0 || day > row.shiftTable.days) return session.text('outOfDay');
 
@@ -490,7 +520,7 @@ export async function apply(ctx: Context, cfg: Config) {
 
                     for (const [s, e] of task.segments) {
                         // 内部 addShift 会调用 normalizeHour 进行自动裁切
-                        const { success, failed } = row.shiftTable.addShift(day - 1, s, e, task.person);
+                        const { success, failed } = await row.shiftTable.addShift(day - 1, s, e, task.person);
                         personAllSuccess.push(...success);
                         personAllFailed.push(...failed);
                     }
@@ -538,7 +568,7 @@ export async function apply(ctx: Context, cfg: Config) {
                 const curr = await getCurrentShift(ctx, getGid(session))
                 if (!curr) return session.text('noGroups');
 
-                const row = await loadShift(ctx, curr.shift_id)
+                const row = await loadShift(ctx, curr.shift_id, cfg.googleAuth)
                 row.shiftTable.setRanking(name, ranking);
 
                 await saveShift(ctx, row)
@@ -555,7 +585,7 @@ export async function apply(ctx: Context, cfg: Config) {
                 const curr = await getCurrentShift(ctx, getGid(session))
                 if (!curr) return session.text('noGroups');
 
-                const row = await loadShift(ctx, curr.shift_id)
+                const row = await loadShift(ctx, curr.shift_id, cfg.googleAuth)
 
                 row.shiftTable.setRanking(name, undefined);
                 await saveShift(ctx, row)
@@ -570,9 +600,9 @@ export async function apply(ctx: Context, cfg: Config) {
                 const curr = await getCurrentShift(ctx, getGid(session));
                 if (!curr) return session.text('noGroups');
 
-                const row = await loadShift(ctx, curr.shift_id);
+                const row = await loadShift(ctx, curr.shift_id, cfg.googleAuth);
 
-                row.shiftTable.renamePerson(oldName, newName);
+                await row.shiftTable.renamePerson(oldName, newName);
 
                 await saveShift(ctx, row)
 
@@ -587,7 +617,7 @@ export async function apply(ctx: Context, cfg: Config) {
                 const curr = await getCurrentShift(ctx, getGid(session))
                 if (!curr) return session.text('noGroups');
 
-                const row = await loadShift(ctx, curr.shift_id)
+                const row = await loadShift(ctx, curr.shift_id, cfg.googleAuth)
                 if (day <= 0 || day > row.shiftTable.days) return session.text('outOfDay');
 
                 const image = await row.shiftTable.renderShiftImage(ctx, day - 1);
@@ -605,7 +635,7 @@ export async function apply(ctx: Context, cfg: Config) {
                 const curr = await getCurrentShift(ctx, getGid(session))
                 if (!curr) return session.text('noGroups');
 
-                const row = await loadShift(ctx, curr.shift_id)
+                const row = await loadShift(ctx, curr.shift_id, cfg.googleAuth)
                 if (day <= 0 || day > row.shiftTable.days) return session.text('outOfDay');
                 // puppeteer 截图
                 const image = await row.shiftTable.renderShiftExchangeImage(ctx, day - 1);
@@ -623,8 +653,8 @@ export async function apply(ctx: Context, cfg: Config) {
                 const curr = await getCurrentShift(ctx, getGid(session))
                 if (!curr) return session.text('noGroups');
 
-                const row = await loadShift(ctx, curr.shift_id);
-                const missingCount = row.shiftTable.getMissingCount(day - 1);
+                const row = await loadShift(ctx, curr.shift_id, cfg.googleAuth);
+                const missingCount = await row.shiftTable.getMissingCount(day - 1);
                 if (!missingCount || missingCount.length !== 24) return session.text('outOfDay');
 
 
@@ -721,9 +751,9 @@ export async function apply(ctx: Context, cfg: Config) {
                 const curr = await getCurrentShift(ctx, getGid(session))
                 if (!curr) return session.text('noGroups')
 
-                const row = await loadShift(ctx, curr.shift_id)
+                const row = await loadShift(ctx, curr.shift_id, cfg.googleAuth)
 
-                const hours = row.shiftTable.setShiftColor(
+                const hours = await row.shiftTable.setShiftColor(
                     day - 1,
                     start,
                     end,
@@ -831,42 +861,50 @@ export async function apply(ctx: Context, cfg: Config) {
     }
 
 }
-
 /**
- * 找到当前群正在使用的班表（shift_id）
+ * 找到当前群正在使用的班表记录
  */
 async function getCurrentShift(ctx: Context, gid: string) {
-    const record = await ctx.database.get('bangdream_shift_group', {
+    const [record] = await ctx.database.get('bangdream_shift_group', {
         gid,
         using: true
-    })
-    return record[0] || null
+    });
+    return record || null;
 }
 
 /**
- * 根据 shift_id 加载 ShiftTable 实例
+ * 根据 shift_id 加载并实例化 ShiftTable
+ * @param ctx
+ * @param shift_id
+ * @param gAuth 运行时传入的 Google 服务账号密钥（不存储于数据库）
  */
-async function loadShift(ctx: Context, shift_id: number): Promise<bangdream_shift | null> {
-    const data = await ctx.database.get('bangdream_shift', { id: shift_id })
-    if (!data[0]) return null;
+async function loadShift(ctx: Context, shift_id: number, gAuth?: GoogleSheetAuth): Promise<bangdream_shift | null> {
+    const [data] = await ctx.database.get('bangdream_shift', { id: shift_id });
+    if (!data) return null;
 
-    const row = data[0];
-    // 反序列化 shiftTable
-    row.shiftTable = Object.assign(new ShiftTable('2025121100', '2025121900'), row.shiftTable);
-    return row;
+    // 使用静态工厂方法还原实例
+    // data.shiftTable 是数据库存的 JSON，gAuth 是内存中的实时密钥
+    if (data.shiftTable) {
+        data.shiftTable = ShiftTable.fromJSON(data.shiftTable as any, gAuth);
+    }
+
+    return data;
 }
 
 /**
  * 保存 ShiftTable 实例
  */
 async function saveShift(ctx: Context, row: bangdream_shift) {
-    // koishi 的 json 字段自动序列化
+    /**
+     * 注意：
+     * 1. 因为 ShiftTable 实现了 toJSON()，Koishi 在序列化时会自动调用它。
+     * 2. toJSON 内部不包含 gAuth，所以数据库里只会存下布局配置（ID/单元格等）和排班数据。
+     */
     await ctx.database.set('bangdream_shift', { id: row.id }, {
         name: row.name,
-        shiftTable: row.shiftTable
-    })
+        shiftTable: row.shiftTable // 这里会触发 row.shiftTable.toJSON()
+    });
 }
-
 /**
  * 检查该群是否是该班表的 owner
  */
