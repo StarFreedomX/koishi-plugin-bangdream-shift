@@ -1,8 +1,9 @@
-import { Context, Schema, Session, Logger } from 'koishi'
+import { Context, Schema, Session, Logger, h } from 'koishi'
 import * as utils from "./utils";
 import { HourColor, ShiftTable, Ranking, ShiftError, GoogleSheetOptions, GoogleSheetAuth } from "./shift";
 import {} from 'koishi-plugin-puppeteer'
 import {} from '@koishijs/plugin-adapter-discord'
+import { channel } from "node:diagnostics_channel";
 
 export const name = 'bangdream-shift'
 export const using = ['puppeteer', 'database'] as const
@@ -48,6 +49,8 @@ interface speedIntervalTracker {
 export interface Config {
     openSpeedTracker: boolean,
     openShift: boolean,
+    autoRecognize: boolean,
+    autoRecognizeRegex: string,
     defaultTimezone: string,
     defaultServer: Server,
     backendUrl: string,
@@ -55,6 +58,10 @@ export interface Config {
         client_email: string;
         private_key: string;
     };
+    test?: {
+        test1: boolean,
+        test2: boolean
+    }
 }
 
 export enum Server {
@@ -64,6 +71,8 @@ export enum Server {
 export const Config = Schema.object({
     openSpeedTracker: Schema.boolean().default(false).description('允许群聊开启定时查询车速'),
     openShift: Schema.boolean().default(false).description('开启班表管理功能'),
+    autoRecognize: Schema.boolean().default(false).description('班表自动识别'),
+    autoRecognizeRegex: Schema.string().default("(\\d{1,2})[ー\\-\\~～;；](\\d{1,2})").description('识别填班的正则表达式'),
     defaultTimezone: Schema.string().default('Asia/Tokyo'),
     defaultServer: Schema.union([
         Schema.const(Server.jp).description('jp'),
@@ -75,8 +84,12 @@ export const Config = Schema.object({
     backendUrl: Schema.string().default('http://localhost:3000').description('后端服务器地址'),
     googleAuth: Schema.object({
         client_email: Schema.string().description('Google Service Account Client Email'),
-        private_key: Schema.string().description('Google Service Account Private Key')
-    }).description('Google Sheets认证信息')
+        private_key: Schema.string().role('secret').description('Google Service Account Private Key')
+    }).description('Google Sheets认证信息'),
+    test: Schema.object({
+        test1: Schema.boolean().default(false),
+        test2: Schema.boolean().default(false)
+    })
 })
 
 export async function apply(ctx: Context, cfg: Config) {
@@ -227,7 +240,7 @@ export async function apply(ctx: Context, cfg: Config) {
                     throw e;
                 }
                 const row = await loadShift(ctx, curr.shift_id, cfg.googleAuth)
-                row.shiftTable.setEndTime(endTs)
+                await row.shiftTable.setEndTime(endTs)
                 await saveShift(ctx, row)
                 return session.text('.success', { name: row.name })
             });
@@ -312,14 +325,18 @@ export async function apply(ctx: Context, cfg: Config) {
                 let allSuccess: number[] = [];
                 let allFailed: number[] = [];
 
+                // 手动同步
+                await row.shiftTable.pull();
                 // 逐段插入
                 for (const [s, e] of segments) {
-                    const { success, failed } = await row.shiftTable.addShift(day - 1, s, e, person);
+                    const { success, failed } = await row.shiftTable.addShift(day - 1, s, e, person, true);
                     allSuccess.push(...success);
                     allFailed.push(...failed);
                 }
 
                 await saveShift(ctx, row);
+                // 手动同步
+                await row.shiftTable.pushDay(day - 1);
 
                 // 转成连续区间
                 const successRanges = hoursToRanges(allSuccess);
@@ -373,13 +390,18 @@ export async function apply(ctx: Context, cfg: Config) {
 
                 const allRemoved = new Set<number>();
 
+                // 手动同步
+                await row.shiftTable.pull();
+
                 // 逐段删除
                 for (const [s, e] of segments) {
-                    const removed = await row.shiftTable.delShift(day - 1, s, e, person);
+                    const removed = await row.shiftTable.delShift(day - 1, s, e, person, true);
                     removed.forEach(h => void allRemoved.add(h));
                 }
 
                 await saveShift(ctx, row);
+                // 手动同步
+                await row.shiftTable.pushDay(day - 1);
 
                 const removedRanges = hoursToRanges([...allRemoved]);
 
@@ -426,14 +448,19 @@ export async function apply(ctx: Context, cfg: Config) {
                 let allSuccess: number[] = [];
                 let allFailed: number[] = [];
 
+                // 手动同步
+                await row.shiftTable.pull();
+
                 // 逐段替换
                 for (const [s, e] of segments) {
-                    const { success, failed } = await row.shiftTable.exchangeShift(day - 1, s, e, oldName, newName);
+                    const { success, failed } = await row.shiftTable.exchangeShift(day - 1, s, e, oldName, newName, true);
                     allSuccess.push(...success);
                     allFailed.push(...failed);
                 }
 
                 await saveShift(ctx, row);
+                // 手动同步
+                await row.shiftTable.pushDay(day - 1);
 
                 // 转成连续区间
                 const successRanges = hoursToRanges(allSuccess);
@@ -470,6 +497,9 @@ export async function apply(ctx: Context, cfg: Config) {
                 const row = await loadShift(ctx, curr.shift_id, cfg.googleAuth);
                 // 校验天数范围（1 到 n）
                 if (day <= 0 || day > row.shiftTable.days) return session.text('outOfDay');
+
+                // 手动同步
+                await row.shiftTable.pull();
 
                 const tasks: { person: string, segments: [number, number][] }[] = [];
 
@@ -520,7 +550,7 @@ export async function apply(ctx: Context, cfg: Config) {
 
                     for (const [s, e] of task.segments) {
                         // 内部 addShift 会调用 normalizeHour 进行自动裁切
-                        const { success, failed } = await row.shiftTable.addShift(day - 1, s, e, task.person);
+                        const { success, failed } = await row.shiftTable.addShift(day - 1, s, e, task.person, true);
                         personAllSuccess.push(...success);
                         personAllFailed.push(...failed);
                     }
@@ -542,6 +572,8 @@ export async function apply(ctx: Context, cfg: Config) {
 
                 // 存储数据并返回格式化消息
                 await saveShift(ctx, row);
+                // 手动同步
+                await row.shiftTable.pushDay(day - 1);
 
                 const finalMsg: string[] = [];
                 if (successEntries.length > 0) {
@@ -766,6 +798,288 @@ export async function apply(ctx: Context, cfg: Config) {
                 return session.text('.success', { day, hourRange, color })
             });
 
+        if (cfg.autoRecognize) {
+
+            ctx.command('ls-channels')
+                .action(async ({ session }) => {
+                    bdShiftLogger.info(session.userId, 'try to list channel');
+
+                    const curr = await getCurrentShift(ctx, getGid(session));
+                    if (!curr) return session.text('.notfound');
+
+                    const row = await loadShift(ctx, curr.shift_id, cfg.googleAuth);
+                    const { shiftTable } = row;
+                    const shifts = await ctx.database.get('bangdream_shift', { id: curr.shift_id });
+                    let output = [session.text('.title', { id: curr.shift_id, name: shifts[0]?.name}), '---'];
+
+                    // 列出报班频道
+                    output.push(session.text(".shiftChannels"));
+                    const sc = Object.entries(shiftTable.shift_channels);
+                    if (sc.length === 0) output.push('  (无)');
+                    else sc.forEach(([id, dayIndex]) => output.push(session.text('.shiftChannelItem', { id, day: dayIndex + 1})));
+
+                    output.push('');
+
+                    // 列出管理频道
+                    output.push(session.text('.managerChannels'));
+                    const mc = shiftTable.manager_channels;
+                    if (!mc || mc.length === 0) output.push(session.text('.none'));
+                    else mc.forEach(id => output.push(session.text('.managerChannelItem', { id })));
+
+                    return output.join('\n');
+                });
+
+            ctx.command('set-shift-channel <day:number> <channel:string>')
+                .option('delete', '-d')
+                .action(async ({ session, options }, day, channel) => {
+                    bdShiftLogger.info(session.userId, 'try to add shift channel: ', day, channel);
+                    // 基础校验与权限检查
+                    if (!day || !channel) return session.text('lack', { params: 'day/channel' });
+                    if (!await canGrant(session)) return session.text('permission-denied');
+
+                    channel = parseChannelId(channel);
+
+                    const curr = await getCurrentShift(ctx, getGid(session));
+                    if (!curr) return;
+                    const row = await loadShift(ctx, curr.shift_id, cfg.googleAuth);
+                    const { shiftTable } = row;
+                    if (options.delete) {
+                        shiftTable.deleteShiftChannel(channel);
+                        await saveShift(ctx, row);
+                        return session.text('.remove', { channel: channel, day: day });
+                    }
+                    shiftTable.addShiftChannel(channel, day - 1);
+                    await saveShift(ctx, row)
+                    return session.text('.success', { channel: channel, day: day });
+                })
+
+            ctx.command('set-manager-channel <channel:string>')
+                .option('delete', '-d')
+                .action(async ({ session, options }, channel) => {
+                    bdShiftLogger.info(session.userId, 'try to add manager channel: ', channel);
+                    // 基础校验与权限检查
+                    if (!channel) return session.text('lack', { params: 'channel' });
+                    if (!await canGrant(session)) return session.text('permission-denied');
+
+                    channel = parseChannelId(channel);
+
+                    const curr = await getCurrentShift(ctx, getGid(session));
+                    if (!curr) return;
+
+                    const row = await loadShift(ctx, curr.shift_id, cfg.googleAuth);
+                    const { shiftTable } = row;
+
+                    if (options.delete) {
+                        shiftTable.deleteManagerChannel(channel);
+                        await saveShift(ctx, row);
+                        return session.text('.remove', { channel: channel });
+                    }
+
+                    shiftTable.addManagerChannel(channel);
+                    await saveShift(ctx, row);
+                    return session.text('.success', { channel: channel});
+                })
+
+            // 内存存储：messageId -> { userId, userName, day, slots, shiftId, timestamp }
+            // slots 结构: { start, end, action: 'none' | 'add' | 'del' }
+            const pendingShifts = new Map();
+            const reactionQueue: (() => Promise<any>)[] = [];
+            let isProcessing = false;
+
+            const nextReaction = async () => {
+                if (reactionQueue.length === 0) {
+                    isProcessing = false;
+                    return;
+                }
+                isProcessing = true;
+                const task = reactionQueue.shift();
+                try {
+                    await task();
+                } catch (e) {
+                    if (e.response?.status === 429) {
+                        console.log(`触发了速率限制，${reactionQueue.length} 个任务待处理，${e.response?.data?.retry_after || 0.5} 秒后重试`);
+                        const delay = (e.response?.data?.retry_after || 0.5) * 1000;
+                        reactionQueue.unshift(task); // 插回队首
+                        ctx.setTimeout(nextReaction, delay + 100);
+                        return;
+                    }
+                }
+                // 正常间隔 350ms 处理下一个，使用 ctx.setTimeout 保证插件卸载时停止
+                ctx.setTimeout(nextReaction, 350);
+            };
+
+            // --- 识别填班并拆分发送 ---
+            ctx.middleware(async (session, next) => {
+                if (!session.channelId || !session.content || session.userId === session.selfId) return;
+                const nickname = session?.event?.user?.nick
+                const gid = getGid(session);
+                const curr = await getCurrentShift(ctx, gid);
+                if (!curr) return;
+
+                const row = await loadShift(ctx, curr.shift_id, cfg.googleAuth);
+                const { shiftTable } = row;
+
+                // 匹配频道天数
+                const dayIndex = shiftTable.shift_channels[session.channelId] ??
+                    shiftTable.shift_channels[`${session.platform}:${session.channelId}`];
+                if (dayIndex === undefined) return;
+
+                const timeRegex = new RegExp(cfg.autoRecognizeRegex, 'g');
+                const matches = [...session.content.matchAll(timeRegex)];
+
+                const channelTitle = (await session.bot.getChannel(session.channelId)).name;
+                const quoteContent = `> #${channelTitle}\n> ${nickname}: ${session.content.replaceAll('\n', '\n> ')}`;
+
+                if (matches.length > 0) {
+                    const userName = nickname || session.username || session.userId;
+
+                    // --- 把之前所有消息的勾都删了 ---
+                    for (const [oldMsgId] of pendingShifts.entries()) {
+                        for (let targetChannel of shiftTable.manager_channels) {
+                            const cleanId = targetChannel.includes(':') ? targetChannel.split(':').pop() : targetChannel;
+                            try {
+                                reactionQueue.push(() => session.bot.deleteReaction(cleanId, oldMsgId, '✅'));
+                            } catch (e) {}
+                        }
+                    }
+
+                    for (let i = 0; i < matches.length; i++) {
+                        const start = parseInt(matches[i][1], 10);
+                        const end = parseInt(matches[i][2], 10);
+                        const isLast = (i === matches.length - 1);
+
+                        const confirmContent = session.text('auto-shift.info', { day: dayIndex + 1, userName, start, end });
+
+                        for (let targetChannel of shiftTable.manager_channels) {
+                            const cleanId = targetChannel.includes(':') ? targetChannel.split(':').pop() : targetChannel;
+                            const [sentMsgId] = await session.bot.sendMessage(cleanId, `${quoteContent}\n${confirmContent}`);
+
+                            if (sentMsgId) {
+                                pendingShifts.set(sentMsgId, {
+                                    userName,
+                                    day: dayIndex,
+                                    slot: { start, end, action: 'none' },
+                                    shiftId: curr.shift_id,
+                                    timestamp: Date.now()
+                                });
+                                const emojis = ['👍', '👎', '🙌'];
+                                if (isLast) emojis.push('✅');
+                                for (const emoji of emojis) {
+                                    reactionQueue.push(() => session.bot.createReaction(cleanId, sentMsgId, emoji));
+                                }
+                                if (!isProcessing) nextReaction();
+                            }
+                        }
+                    }
+                } else if (/\d/.test(session.content)) {
+                    for (let targetChannel of shiftTable.manager_channels) {
+                        const cleanId = targetChannel.includes(':') ? targetChannel.split(':').pop() : targetChannel;
+                        try {
+                            await session.bot.sendMessage(cleanId, session.text('auto-shift.noMatch', { quote: quoteContent }));
+                        } catch (e) {
+                            console.error(e)
+                        }
+                    }
+                }
+                await next();
+            });
+
+            // 处理表情标记与最终提交
+            ctx.on('reaction-added', async (session) => {
+                if (session.userId === session.selfId) return;
+                const currentPending = pendingShifts.get(session.messageId);
+                if (!currentPending) return;
+
+                const cleanId= session.channelId;
+
+                // 在 reaction-added 监听中
+                if (['👍', '👎', '🙌'].includes(session.content)) {
+                    const actionMap = {
+                        '👍': 'add',
+                        '👎': 'del',
+                        '🙌': 'skip' // 标记为跳过
+                    };
+                    currentPending.slot.action = actionMap[session.content];
+                    console.log(`[标记] 消息 ${session.messageId} 状态改为: ${currentPending.slot.action}`);
+                    return;
+                }
+
+                // 提交动作
+                if (session.content === '✅') {
+                    const row = await loadShift(ctx, currentPending.shiftId, cfg.googleAuth);
+                    const { shiftTable } = row;
+
+                    const tasksByDay = new Map();
+                    let hasUnprocessed = false;
+
+                    // 第一遍扫描：合法性检查
+                    for (const [msgId, data] of pendingShifts.entries()) {
+                        // 只检查同一个班表项目下的任务
+                        if (data.shiftId === currentPending.shiftId) {
+                            if (data.slot.action === 'none') {
+                                hasUnprocessed = true;
+                                break;
+                            }
+                            // 只有标记了 add 或 del 的才加入处理队列，skip 的不加
+                            if (data.slot.action !== 'skip') {
+                                if (!tasksByDay.has(data.day)) tasksByDay.set(data.day, []);
+                                tasksByDay.get(data.day).push({ msgId, ...data });
+                            }
+                        }
+                    }
+
+                    // --- 如果有没点的，直接拦截并提示 ---
+                    if (hasUnprocessed) {
+                        await session.bot.sendMessage(cleanId, session.text('auto-shift.failed'));
+                        return;
+                    }
+
+                    const results = [];
+
+                    // --- 执行处理逻辑 ---
+
+                    // 只有当确实有 add/del 任务时，才执行数据库操作
+                    if (tasksByDay.size > 0) {
+                        await shiftTable.pull();
+                        for (const [dayIndex, tasks] of tasksByDay.entries()) {
+                            for (const task of tasks) {
+                                const actionText = task.slot.action === 'add'
+                                    ? session.text('auto-shift.add')
+                                    : session.text('auto-shift.del');
+
+                                if (task.slot.action === 'add') {
+                                    await shiftTable.addShift(dayIndex, task.slot.start, task.slot.end, task.userName, true);
+                                } else {
+                                    await shiftTable.delShift(dayIndex, task.slot.start, task.slot.end, task.userName, true);
+                                }
+                                // 记录 add/del 的结果
+                                results.push(`- [${actionText}] ${task.userName} ${dayIndex + 1}日目 ${task.slot.start}-${task.slot.end}`);
+                            }
+                            await shiftTable.pushDay(dayIndex);
+                        }
+                    }
+
+                    // 统一清理内存并记录 skip 项
+                    for (const [msgId, data] of pendingShifts.entries()) {
+                        if (data.shiftId === currentPending.shiftId) {
+                            // 如果是 skip，记录到结果中
+                            if (data.slot.action === 'skip') {
+                                results.push(`- [${session.text('auto-shift.skip')}] ${data.userName} ${data.day + 1}日目 ${data.slot.start}-${data.slot.end}`);
+                            }
+                            // 无论 action 是 add, del 还是 skip，结算后都从内存移除
+                            pendingShifts.delete(msgId);
+                        }
+                    }
+
+                    await saveShift(ctx, row);
+
+                    if (results.length > 0) {
+                        const summary = session.text('auto-shift.finish', { results: results.join('\n') });
+                        await session.bot.sendMessage(session.channelId, summary);
+                    }
+                }
+            });
+        }
     }
 
     //车速定时功能
@@ -859,7 +1173,25 @@ export async function apply(ctx: Context, cfg: Config) {
             }
         }
     }
+    if (cfg.test) {
+        if (cfg.test.test1) {
+            ctx.command('test [param1:text]')
+                .alias('test')
+                .action(async ({ session }, param1) => {
+                    console.log(param1)
+                    // await session.send('测试成功');
+                });
+        }
 
+        if (cfg.test.test2) {
+            ctx.command('test2 [param1:text]')
+                .alias('test2')
+                .action(async ({ session }, param1) => {
+                    console.log(param1)
+                    // await session.send('测试成功2');
+                });
+        }
+    }
 }
 /**
  * 找到当前群正在使用的班表记录
@@ -967,8 +1299,28 @@ async function canGrant(session) {
 }
 
 function getGid(session: Session) {
-    return session.guild ? session.gid : session.uid
+    return session.guild || session.event.guild ? session.gid ?? `${session.event.platform}:${session.event.guild.id}` : session.uid
 }
+
+
+/**
+ * 解析 Discord 频道 ID (匹配字符串中最后一个 17-20 位的数字串)
+ * 支持:
+ * - Mention: <#1234567890123456789>
+ * - URL: https://discord.com/channels/.../1234567890123456789
+ * - Raw ID: 1234567890123456789
+ * - Koishi Element: <sharp id="1234567890123456789"/>
+ */
+function parseChannelId(input: string): string | null {
+    if (!input) return null;
+
+    // 使用全局匹配获取所有符合 ID 特征的数字串
+    const matches = input.match(/\d{17,20}/g);
+
+    // 如果有匹配项，取最后一个
+    return matches ? matches[matches.length - 1] : null;
+}
+
 
 function roundToNearestHour(str: string): string {
     if (!/^\d{10,14}$/.test(str) || str.length % 2 !== 0) throw new ShiftError("INVALID_TIME_FORMAT", 'Invalid Time Format');

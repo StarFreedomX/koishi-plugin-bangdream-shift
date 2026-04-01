@@ -68,6 +68,9 @@ interface ShiftExchange {
 }
 
 export class ShiftTable {
+    get manager_channels(): string[] { return this._manager_channels; }
+
+    get shift_channels(): { [channelId:string]: number; } { return this._shift_channels; }
 
     set timezone(value: string) {this._timezone = value;}
 
@@ -123,6 +126,10 @@ export class ShiftTable {
     /** 这里day是0开始 */
     private shift_table: DaySchedule[] = []; // 行：小时，列：人员
     private member_table: memberTable = {};
+    private _manager_channels: string[] = [];
+    private _shift_channels: {
+        [channelId:string]: number;
+    } = {}
     private _eventStartTime: string;
     private _eventEndTime: string;
     private _days: number; // 总天数
@@ -183,7 +190,9 @@ export class ShiftTable {
         gOptions?: GoogleSheetOptions,
         shift_table: DaySchedule[],
         member_table: memberTable,
-        shiftExchange: ShiftExchange[][]
+        shiftExchange: ShiftExchange[][],
+        manager_channels?: string[],
+        shift_channels?: { [channelId:string]: number; }
     }, gAuth?: GoogleSheetAuth): ShiftTable {
         // 调用构造函数，触发 Handler 的初始化
         const instance = new ShiftTable(
@@ -197,6 +206,8 @@ export class ShiftTable {
         instance.shift_table = data.shift_table || [];
         instance.member_table = data.member_table || {};
         instance.shiftExchange = data.shiftExchange || [];
+        instance._manager_channels = data.manager_channels || [];
+        instance._shift_channels = data.shift_channels || {};
 
         return instance;
     }
@@ -210,6 +221,8 @@ export class ShiftTable {
             shift_table: this.shift_table,
             member_table: this.member_table,
             shiftExchange: this.shiftExchange,
+            manager_channels: this._manager_channels,
+            shift_channels: this._shift_channels,
         };
     }
 
@@ -279,25 +292,84 @@ export class ShiftTable {
     }
 
     /**
-     * 从Google Sheets拉取最新数据（如果启用）
+     * 【手动拉取】从 Google Sheets 同步最新数据到内存
+     * 建议在执行任何查询（如渲染图片、获取缺人统计）前调用
      */
-    async pull() {
+    async pull(): Promise<void> {
         if (this.googleSheetHandler) {
-            console.log("pull")
             await this.googleSheetHandler.pull(this);
         }
     }
 
     /**
+     * 【局部推送】将内存中某一天的班表同步到 Google Sheets
+     * 适用于单次修改某天后的快速同步
+     * @param dayIndex 第几天 (0开始)
+     */
+    async pushDay(dayIndex: number): Promise<void> {
+        if (this.googleSheetHandler) {
+            if (dayIndex < 0 || dayIndex >= this.days) return;
+            await this.googleSheetHandler.pushDay(dayIndex, this);
+        }
+    }
+
+    /**
+     * 【全量推送】将内存中所有天的班表同步到 Google Sheets
+     * 适用于批量修改、重命名、或是修改活动结束时间后的同步
+     */
+    async pushAllDays(): Promise<void> {
+        if (this.googleSheetHandler) {
+            await this.googleSheetHandler.pushAllDays(this);
+        }
+    }
+
+    addManagerChannel(channelId: string) {
+        if (!this._manager_channels.includes(channelId)) {
+            this._manager_channels.push(channelId);
+        }
+    }
+
+    deleteManagerChannel(channelId: string): boolean {
+        const i = this._manager_channels.indexOf(channelId);
+        if (i !== -1) {
+            this._manager_channels.splice(i, 1);
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * 添加或更新频道的排班日期
+     * @param channelId 频道ID
+     * @param dayIndex 对应的日期索引（0开始），表示该频道显示第几天的班表
+     */
+    addShiftChannel(channelId: string, dayIndex: number) {
+        // 直接赋值即可，如果已存在则会更新为新的 dayIndex
+        this._shift_channels[channelId] = dayIndex;
+    }
+
+    /**
+     * 删除指定频道的排班映射
+     * @param channelId 频道ID
+     * @returns 是否删除成功
+     */
+    deleteShiftChannel(channelId: string): boolean {
+        if (channelId in this._shift_channels) {
+            delete this._shift_channels[channelId];
+            return true;
+        }
+        return false;
+    }
+
+    /**
      * 添加班表人员（返回成功/失败小时列表）
      */
-    async addShift(dayIndex: number, startHour: number, endHour: number, person: string): Promise<{
+    async addShift(dayIndex: number, startHour: number, endHour: number, person: string, skipSync = false): Promise<{
         success: number[],
         failed: number[]
     }> {
-        if (this.googleSheetHandler) {
-            await this.googleSheetHandler.pull(this);
-        }
+        if (!skipSync) await this.pull();
+
         const hours = this.normalizeHour(dayIndex, startHour, endHour), d = this.shift_table[dayIndex];
         const res = { success: [] as number[], failed: [] as number[] };
         if (!hours?.length) return res;
@@ -313,9 +385,9 @@ export class ShiftTable {
             }
         });
 
-        if (res.success.length) this.adjustDay(dayIndex);
-        if (this.googleSheetHandler && res.success.length) {
-            await this.googleSheetHandler.pushDay(dayIndex, this);
+        if (res.success.length) {
+            this.adjustDay(dayIndex);
+            if (!skipSync) await this.pushDay(dayIndex);
         }
         return res;
     }
@@ -327,12 +399,13 @@ export class ShiftTable {
      * @param startHour 上班时刻
      * @param endHour 下班时刻
      * @param person 人名
+     * @param skipSync 是否跳过自动同步
      * @return 返回该人员被删除的所有小时列表
      */
-    async delShift(dayIndex: number, startHour: number, endHour: number, person: string): Promise<number[]> {
-        if (this.googleSheetHandler) {
-            await this.googleSheetHandler.pull(this);
-        }
+    async delShift(dayIndex: number, startHour: number, endHour: number, person: string, skipSync = false): Promise<number[]> {
+
+        if (!skipSync) await this.pull();
+
         const hours = this.normalizeHour(dayIndex, startHour, endHour), d = this.shift_table[dayIndex];
         const removed: number[] = [];
 
@@ -344,9 +417,8 @@ export class ShiftTable {
             }
         });
 
-        if (this.googleSheetHandler && removed.length) {
-            await this.googleSheetHandler.pushDay(dayIndex, this);
-        }
+        if (removed.length && !skipSync) await this.pushDay(dayIndex);
+
         return removed;
     }
 
@@ -357,15 +429,15 @@ export class ShiftTable {
      * @param endHour 结束小时
      * @param fromPerson 被替换的人
      * @param toPerson 替换成的人
+     * @param skipSync 是否跳过自动同步
      * @returns { success: number[], failed: number[] } 成功/失败的小时列表
      */
-    async exchangeShift(dayIndex: number, startHour: number, endHour: number, fromPerson: string, toPerson: string): Promise<{
+    async exchangeShift(dayIndex: number, startHour: number, endHour: number, fromPerson: string, toPerson: string, skipSync = false): Promise<{
         success: number[],
         failed: number[]
     }> {
-        if (this.googleSheetHandler) {
-            await this.googleSheetHandler.pull(this);
-        }
+        if (!skipSync) await this.pull();
+
         const hours = this.normalizeHour(dayIndex, startHour, endHour), d = this.shift_table[dayIndex];
         const res = { success: [] as number[], failed: [] as number[] };
 
@@ -386,9 +458,8 @@ export class ShiftTable {
         });
 
         if (res.success.length) this.adjustDay(dayIndex);
-        if (this.googleSheetHandler && res.success.length) {
-            await this.googleSheetHandler.pushDay(dayIndex, this);
-        }
+        if (res.success.length && !skipSync) await this.pushDay(dayIndex);
+
         return res;
     }
 
@@ -401,9 +472,8 @@ export class ShiftTable {
     async renamePerson(oldName: string, newName: string): Promise<void> {
         if (!oldName || !newName || oldName === newName) return;
 
-        if (this.googleSheetHandler) {
-            await this.googleSheetHandler.pull(this);
-        }
+        await this.pull();
+
 
         // 替换 shift_table 中的所有匹配项
         this.shift_table.forEach(day =>
@@ -426,9 +496,9 @@ export class ShiftTable {
 
         this.adjustAllDays();
 
-        if (this.googleSheetHandler) {
-            await this.googleSheetHandler.pushAllDays(this);
-        }
+
+        await this.pushAllDays();
+
     }
 
 
@@ -440,16 +510,15 @@ export class ShiftTable {
      * @param color 颜色属性
      */
     async setShiftColor(dayIndex: number, startHour: number, endHour: number, color: HourColor): Promise<number[]> {
-        if (this.googleSheetHandler) {
-            await this.googleSheetHandler.pull(this);
-        }
+
+        await this.pull();
+
         const hours = this.normalizeHour(dayIndex, startHour, endHour, false);
         for (const h of hours) {
             this.shift_table[dayIndex][h].hourColor = color;
         }
-        if (this.googleSheetHandler && hours.length) {
-            await this.googleSheetHandler.pushDay(dayIndex, this);
-        }
+        if (hours.length) await this.pushDay(dayIndex);
+
         return hours;
     }
 
@@ -510,7 +579,7 @@ export class ShiftTable {
         }, {} as Record<number, Record<number, HourBlock>>);
     }
 
-    setEndTime(newEndTime: string) {
+    async setEndTime(newEndTime: string) {
         // 基础格式校验 (yyyyMMddHH 长度应为 10)
         if (newEndTime.length !== 10) {
             throw new ShiftError("INVALID_TIME_FORMAT", "Invalid time format: expected yyyyMMddHH");
@@ -541,10 +610,9 @@ export class ShiftTable {
         }
 
         this.markInvalidHours();
-        if (this.googleSheetHandler) {
-            // Since days changed, push all days
-            this.googleSheetHandler.pushAllDays(this);
-        }
+
+        await this.pushAllDays();
+
     }
 
     /**
@@ -741,9 +809,8 @@ export class ShiftTable {
      */
     static async create(startTime: string, endTime: string, timezone: string = 'Asia/Tokyo', gOptions?: GoogleSheetOptions, gAuth?: GoogleSheetAuth): Promise<ShiftTable> {
         const instance = new ShiftTable(startTime, endTime, timezone, gOptions, gAuth);
-        if (instance.googleSheetHandler) {
-            await instance.googleSheetHandler.pull(instance);
-        }
+        await instance.pull();
+
         return instance;
     }
 }

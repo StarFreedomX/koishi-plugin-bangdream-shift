@@ -3,6 +3,14 @@ lack: '缺少参数: {params}'
 noGroups: '当前群/服务器未绑定任何班表'
 notOwner: '当前群/服务器无该表的所有权'
 outOfDay: '日期超出范围'
+auto-shift:
+    info: '{day}日目 {userName} {start}-{end}'
+    finish: '✅ 排班操作成功！<br/><br/>{results}'
+    failed: '❌ 提交失败：队列中仍有未处理的消息，请全部标记后再提交（跳过请点 🙌）。'
+    noMatch: '{quote}<br/>未识别到时间段'
+    add: '添加'
+    del: '删除'
+    skip: '跳过'
 
 commands:
     create-shift:
@@ -45,6 +53,26 @@ commands:
             fail: '以下时间段已经输入过，或时间段已满: <br/>第{day}天<br/>{message}'
             person-hours: '{person} {hourRange}'
             errorTime: '无法解析时间段，请检查参数'
+    set-shift-channel:
+        description: '设置班表频道'
+        messages:
+            success: '已将 {channel} 设置为day {day}的班表频道 '
+            remove: '已移除 day {day} 班表频道: {channel}'
+    set-manager-channel:
+        description: '设置班表管理频道'
+        messages:
+            success: '已将班表管理频道设置为 {channel}'
+            remove: '已移除管理频道: {channel}'
+    ls-channels:
+        description: '列出当前班表/管理频道'
+        messages:
+            none: '(无)'
+            notfound: '未找到当前关联的频道。'
+            title: '📅 班表: <br/>{id} - {name}'
+            shiftChannels: '📢 班表频道 (Shift Channels):'
+            shiftChannelItem:  '- 频道: {id} -> 第 {day} 天'
+            managerChannels: '🛠️ 管理频道 (Manager Channels):'
+            managerChannelItem: '- 频道: {id}'
     rename-person:
         description: '重命名玩家'
         messages:
