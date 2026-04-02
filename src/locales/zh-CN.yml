@@ -63,6 +63,15 @@ commands:
         messages:
             success: '已将班表管理频道设置为 {channel}'
             remove: '已移除管理频道: {channel}'
+    autoshift:
+        edit:
+            description: '编辑自动排班'
+            messages:
+                noQuoteId: '❌ 请回复待确认的消息或传入消息链接'
+                notInPendingList: '❌ 未找到对应的排班消息，请确保回复了正确的消息或传入了正确的链接'
+                noEditByTotal: '❌ 引用消息不支持统一修改时间，请分别回复具体的时间段消息'
+                successAll: '✅ 已成功同步修改所有关联时间段'
+                success: '✅ 已修改该时间段'
     ls-channels:
         description: '列出当前班表/管理频道'
         messages:

@@ -46,6 +46,17 @@ interface speedIntervalTracker {
     deadlineStamp: number,
 }
 
+interface PendingShift {
+    userName: string;
+    day: number;
+    slot?: { start: number; end: number; action: string }; // 根消息没有 slot
+    shiftId: number;
+    timestamp: number;
+    // 关系链
+    rootId?: string;       // 子消息指向根消息
+    childIds?: string[];   // 根消息指向所有子消息
+}
+
 export interface Config {
     openSpeedTracker: boolean,
     openShift: boolean,
@@ -882,9 +893,139 @@ export async function apply(ctx: Context, cfg: Config) {
                     return session.text('.success', { channel: channel});
                 })
 
+            ctx.command('autoshift.edit <messageLink:string>', '修改排班信息')
+                .option('user', '-u <name:string> 修改姓名')
+                .option('day', '-d <day:number> 修改天数')
+                .option('time', '-t <time:string> 修改时间段')
+                .action(async ({ session, options }, messageLink) => {
+                    const quoteId = session.quote?.id || parseChannelId(messageLink);
+                    if (!quoteId) return session.text('.noQuoteId');
+                    if (!pendingShifts.has(quoteId)) return session.text('.notInPendingList');
+
+                    const data = pendingShifts.get(quoteId);
+
+                    // --- 情况 A: 回复的是根消息（引用消息） ---
+                    if (data.childIds) {
+                        if (options.time) return session.text('.noEditByTotal');
+                        if (!options.user && !options.day) return session.text('lack', { params: 'user/day' });
+
+                        const newName = options.user || data.userName;
+                        const newDay = options.day !== undefined ? options.day - 1 : data.day;
+
+                        // 1. 更新根消息自身数据
+                        data.userName = newName;
+                        data.day = newDay;
+
+                        // 2. 遍历所有关联的子消息进行修改
+                        for (const childId of data.childIds) {
+                            const childData = pendingShifts.get(childId);
+                            if (!childData) continue;
+
+                            childData.userName = newName;
+                            childData.day = newDay;
+
+                            // 更新子消息 UI
+                            const newChildContent = session.text('auto-shift.info', {
+                                day: childData.day + 1,
+                                userName: childData.userName,
+                                start: childData.slot.start,
+                                end: childData.slot.end
+                            });
+
+                            await updateMessageUI(session, childId, newChildContent, childData);
+                        }
+                        return session.text('.successAll');
+                    }
+
+                    // --- 情况 B: 回复的是子消息（时间段消息） ---
+                    else if (data.rootId) {
+                        if (options.user) data.userName = options.user;
+                        if (options.day) data.day = options.day - 1;
+                        if (options.time) {
+                            const match = options.time.match(/(\d+)\s*-\s*(\d+)/);
+                            if (match) {
+                                data.slot.start = parseInt(match[1], 10);
+                                data.slot.end = parseInt(match[2], 10);
+                            }
+                        }
+
+                        const newContent = session.text('auto-shift.info', {
+                            day: data.day + 1,
+                            userName: data.userName,
+                            start: data.slot.start,
+                            end: data.slot.end
+                        });
+
+                        await updateMessageUI(session, quoteId, newContent, data);
+                        return session.text('.success');
+                    }
+                });
+
+            /**
+             * 统一的消息 UI 更新函数
+             * @param session 当前执行指令的 session
+             * @param oldMsgId 要修改的目标消息 ID
+             * @param newContent 渲染后的新文本 (auto-shift.info)
+             * @param data 内存中的 shift 数据对象
+             */
+            async function updateMessageUI(session, oldMsgId, newContent, data) {
+                const channelId = session.channelId;
+                const bot = session.bot;
+
+                // 构造最终展示文本
+                const finalContent = h.parse(`${newContent}\n*(已修正)*`);
+
+                if (session.platform === 'discord') {
+                    try {
+                        // Discord 平台：直接原地编辑
+                        await bot.editMessage(channelId, oldMsgId, finalContent);
+                        // 内存数据已在外部修改，直接 set 确保同步
+                        pendingShifts.set(oldMsgId, data);
+                    } catch (e) {
+                        console.error('[Shift-Edit-Error]', e);
+                        throw new Error('Discord 消息编辑失败');
+                    }
+                } else {
+                    try {
+                        // 非 Discord 平台：清除旧反应 -> 发送新消息 -> 迁移 ID
+                        await bot.clearReactions(channelId, oldMsgId).catch(() => {});
+
+                        const [newMsgId] = await bot.sendMessage(channelId, finalContent);
+
+                        if (newMsgId) {
+                            // 1. 迁移内存索引
+                            pendingShifts.delete(oldMsgId);
+                            pendingShifts.set(newMsgId, data);
+
+                            // 2. 如果是子消息（即 data.rootId 存在），需要同步更新根消息里的 childIds 指向
+                            if (data.rootId && pendingShifts.has(data.rootId)) {
+                                const rootData = pendingShifts.get(data.rootId);
+                                const index = rootData.childIds.indexOf(oldMsgId);
+                                if (index !== -1) {
+                                    rootData.childIds[index] = newMsgId; // 把旧 ID 替换为新 ID
+                                }
+                            }
+
+                            // 3. 重新贴上表情
+                            const emojis = ['👍', '👎', '🙌'];
+                            // 只有原本是该组最后一个消息时才加 ✅ (这里可以根据业务逻辑判断)
+                            // 简单处理：全部重新贴一遍，或者从原 data 记录状态
+                            for (const emoji of emojis) {
+                                reactionQueue.push(() => bot.createReaction(channelId, newMsgId, emoji));
+                            }
+                            // 触发队列
+                            if (!isProcessing) void nextReaction();
+                        }
+                    } catch (e) {
+                        console.error('[Shift-Reissue-Error]', e);
+                        throw new Error('非 Discord 平台消息重发失败');
+                    }
+                }
+            }
+
             // 内存存储：messageId -> { userId, userName, day, slots, shiftId, timestamp }
             // slots 结构: { start, end, action: 'none' | 'add' | 'del' }
-            const pendingShifts = new Map();
+            const pendingShifts: Map<string, PendingShift> = new Map();
             const reactionQueue: (() => Promise<any>)[] = [];
             let isProcessing = false;
 
@@ -910,82 +1051,7 @@ export async function apply(ctx: Context, cfg: Config) {
                 ctx.setTimeout(nextReaction, 350);
             };
 
-            ctx.command('autoshift.edit', '修改识别错误的排班信息')
-                .alias('改班')
-                .option('user', '-u <name:string> 修改姓名')
-                .option('day', '-d <day:number> 修改天数')
-                .option('time', '-t <time:string> 修改时间段')
-                .action(async ({ session, options }) => {
-                    const quoteId = session.quote?.id;
-                    if (!quoteId || !pendingShifts.has(quoteId)) {
-                        return '❌ 请回复机器人发出的那条确认消息。';
-                    }
 
-                    const data = pendingShifts.get(quoteId);
-                    let isModified = false;
-
-                    // --- 数据修改逻辑 ---
-                    if (options.user) { data.userName = options.user; isModified = true; }
-                    if (options.day) { data.day = options.day - 1; isModified = true; }
-                    if (options.time) {
-                        const match = options.time.match(/(\d+)\s*-\s*(\d+)/);
-                        if (match) {
-                            data.slot.start = parseInt(match[1], 10);
-                            data.slot.end = parseInt(match[2], 10);
-                            isModified = true;
-                        }
-                    }
-
-                    if (!isModified) return '请输入修改选项。';
-
-                    // --- 构造新内容 ---
-                    const newConfirmContent = session.text('auto-shift.info', {
-                        day: data.day + 1,
-                        userName: data.userName,
-                        start: data.slot.start,
-                        end: data.slot.end
-                    });
-
-                    const fullContent = h.parse(`${data.originalQuote}\n${newConfirmContent}\n*(已人工修正)*`);
-
-                    // --- 平台差异化处理 ---
-                    if (session.platform === 'discord') {
-                        try {
-                            // Discord 平台：原地编辑
-                            await session.bot.editMessage(session.channelId, quoteId, fullContent);
-                            pendingShifts.set(quoteId, data); // 更新内存数据
-                            return '✅ 已修正原消息';
-                        } catch (e) {
-                            return `❌ 编辑失败: ${e.message}`;
-                        }
-                    } else {
-                        try {
-                            // 非 Discord 平台：
-                            // 清除旧消息的表情（防止混淆）
-                            await session.bot.clearReaction(session.channelId, quoteId).catch(() => {});
-
-                            // 发送新消息
-                            const [newMsgId] = await session.bot.sendMessage(session.channelId, fullContent);
-
-                            if (newMsgId) {
-                                // 迁移内存索引 删除旧 ID，绑定新 ID
-                                pendingShifts.delete(quoteId);
-                                pendingShifts.set(newMsgId, data);
-
-                                // 重新贴上表情
-                                const emojis = ['👍', '👎', '🙌', '✅'];
-                                for (const emoji of emojis) {
-                                    reactionQueue.push(() => session.bot.createReaction(session.channelId, newMsgId, emoji));
-                                }
-                                if (!isProcessing) void nextReaction();
-
-                                return `✅ 已重新发布 (新ID: ${newMsgId})`;
-                            }
-                        } catch (e) {
-                            return `❌ 操作失败: ${e.message}`;
-                        }
-                    }
-                });
 
             // --- 识别填班并拆分发送 ---
             ctx.middleware(async (session, next) => {
@@ -1032,43 +1098,64 @@ export async function apply(ctx: Context, cfg: Config) {
 
                 if (matches.length > 0) {
                     const userName = nickname;
+                    // 用于收集当前这一组发出的子消息 ID
+                    const currentGroupIds: string[] = [];
 
-                    // --- 清理旧消息的确认勾 ---
-                    for (const [oldMsgId] of pendingShifts.entries()) {
-                        for (let targetChannel of shiftTable.manager_channels) {
-                            const cleanId = targetChannel.includes(':') ? targetChannel.split(':').pop() : targetChannel;
-                            reactionQueue.push(() => session.bot.deleteReaction(cleanId, oldMsgId, '✅').catch(() => {}));
-                        }
-                    }
+                    for (let targetChannel of shiftTable.manager_channels) {
+                        const cleanId = targetChannel.includes(':') ? targetChannel.split(':').pop() : targetChannel;
 
-                    for (let i = 0; i < matches.length; i++) {
-                        const start = parseInt(matches[i][1], 10);
-                        const end = parseInt(matches[i][2], 10);
-                        const isLast = (i === matches.length - 1);
+                        // 1. 发送根引用消息
+                        const [rootId] = await session.bot.sendMessage(cleanId, quoteContent);
+                        if (!rootId) continue;
 
-                        const confirmContent = session.text('auto-shift.info', { day: dayIndex + 1, userName, start, end });
+                        // 初始化根消息数据
+                        pendingShifts.set(rootId, {
+                            userName,
+                            day: dayIndex,
+                            shiftId: curr.shift_id,
+                            timestamp: Date.now(),
+                            childIds: [] // 稍后填充
+                        });
 
-                        for (let targetChannel of shiftTable.manager_channels) {
-                            const cleanId = targetChannel.includes(':') ? targetChannel.split(':').pop() : targetChannel;
-                            const [sentMsgId] = await session.bot.sendMessage(cleanId, `${quoteContent}\n${confirmContent}`);
+                        const childIdsForThisRoot: string[] = [];
+
+                        // 2. 发送各个时间段消息
+                        for (let i = 0; i < matches.length; i++) {
+                            const start = parseInt(matches[i][1], 10);
+                            const end = parseInt(matches[i][2], 10);
+                            const isLast = (i === matches.length - 1);
+                            const confirmContent = session.text('auto-shift.info', { day: dayIndex + 1, userName, start, end });
+
+                            const [sentMsgId] = await session.bot.sendMessage(cleanId, confirmContent);
 
                             if (sentMsgId) {
+                                childIdsForThisRoot.push(sentMsgId);
+
+                                // 存储子消息，记录 rootId
                                 pendingShifts.set(sentMsgId, {
                                     userName,
                                     day: dayIndex,
                                     slot: { start, end, action: 'none' },
                                     shiftId: curr.shift_id,
-                                    timestamp: Date.now()
+                                    timestamp: Date.now(),
+                                    rootId: rootId
                                 });
 
+                                // 贴表情逻辑...
                                 const emojis = ['👍', '👎', '🙌'];
                                 if (isLast) emojis.push('✅');
                                 for (const emoji of emojis) {
                                     reactionQueue.push(() => session.bot.createReaction(cleanId, sentMsgId, emoji));
                                 }
-                                if (!isProcessing) void nextReaction();
                             }
                         }
+
+                        // 3. 将子消息 ID 关联到根消息
+                        const rootData = pendingShifts.get(rootId);
+                        rootData.childIds = childIdsForThisRoot;
+                        pendingShifts.set(rootId, rootData);
+
+                        if (!isProcessing) void nextReaction();
                     }
                 } else if (/\d/.test(session.content)) {
                     // --- 没识别到填班但包含数字：提示未识别 ---
@@ -1088,7 +1175,7 @@ export async function apply(ctx: Context, cfg: Config) {
             ctx.on('reaction-added', async (session) => {
                 if (session.userId === session.selfId) return;
                 const currentPending = pendingShifts.get(session.messageId);
-                if (!currentPending) return;
+                if (!currentPending || !currentPending.slot) return;
 
                 const cleanId= session.channelId;
 
@@ -1116,6 +1203,8 @@ export async function apply(ctx: Context, cfg: Config) {
                     for (const [msgId, data] of pendingShifts.entries()) {
                         // 只检查同一个班表项目下的任务
                         if (data.shiftId === currentPending.shiftId) {
+                            if (!data.slot) continue;
+
                             if (data.slot.action === 'none') {
                                 hasUnprocessed = true;
                                 break;
@@ -1162,11 +1251,10 @@ export async function apply(ctx: Context, cfg: Config) {
                     // 统一清理内存并记录 skip 项
                     for (const [msgId, data] of pendingShifts.entries()) {
                         if (data.shiftId === currentPending.shiftId) {
-                            // 如果是 skip，记录到结果中
-                            if (data.slot.action === 'skip') {
+                            if (data.slot && data.slot.action === 'skip') {
                                 results.push(`- [${session.text('auto-shift.skip')}] ${data.userName} ${data.day + 1}日目 ${data.slot.start}-${data.slot.end}`);
                             }
-                            // 无论 action 是 add, del 还是 skip，结算后都从内存移除
+                            // 根消息和子消息都要从内存移除
                             pendingShifts.delete(msgId);
                         }
                     }
