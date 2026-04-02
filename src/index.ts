@@ -1,8 +1,8 @@
 import { Context, Schema, Session, Logger, h } from 'koishi'
 import * as utils from "./utils";
 import { HourColor, ShiftTable, Ranking, ShiftError } from "./shift";
-import 'koishi-plugin-puppeteer'
-import '@koishijs/plugin-adapter-discord'
+import {} from 'koishi-plugin-puppeteer'
+import {} from '@koishijs/plugin-adapter-discord'
 import { GoogleSheetAuth, GoogleSheetParams } from "./googleSheetHandler";
 
 export const name = 'bangdream-shift'
@@ -909,6 +909,83 @@ export async function apply(ctx: Context, cfg: Config) {
                 // 正常间隔 350ms 处理下一个，使用 ctx.setTimeout 保证插件卸载时停止
                 ctx.setTimeout(nextReaction, 350);
             };
+
+            ctx.command('autoshift.edit', '修改识别错误的排班信息')
+                .alias('改班')
+                .option('user', '-u <name:string> 修改姓名')
+                .option('day', '-d <day:number> 修改天数')
+                .option('time', '-t <time:string> 修改时间段')
+                .action(async ({ session, options }) => {
+                    const quoteId = session.quote?.id;
+                    if (!quoteId || !pendingShifts.has(quoteId)) {
+                        return '❌ 请回复机器人发出的那条确认消息。';
+                    }
+
+                    const data = pendingShifts.get(quoteId);
+                    let isModified = false;
+
+                    // --- 数据修改逻辑 ---
+                    if (options.user) { data.userName = options.user; isModified = true; }
+                    if (options.day) { data.day = options.day - 1; isModified = true; }
+                    if (options.time) {
+                        const match = options.time.match(/(\d+)\s*-\s*(\d+)/);
+                        if (match) {
+                            data.slot.start = parseInt(match[1], 10);
+                            data.slot.end = parseInt(match[2], 10);
+                            isModified = true;
+                        }
+                    }
+
+                    if (!isModified) return '请输入修改选项。';
+
+                    // --- 构造新内容 ---
+                    const newConfirmContent = session.text('auto-shift.info', {
+                        day: data.day + 1,
+                        userName: data.userName,
+                        start: data.slot.start,
+                        end: data.slot.end
+                    });
+
+                    const fullContent = h.parse(`${data.originalQuote}\n${newConfirmContent}\n*(已人工修正)*`);
+
+                    // --- 平台差异化处理 ---
+                    if (session.platform === 'discord') {
+                        try {
+                            // Discord 平台：原地编辑
+                            await session.bot.editMessage(session.channelId, quoteId, fullContent);
+                            pendingShifts.set(quoteId, data); // 更新内存数据
+                            return '✅ 已修正原消息';
+                        } catch (e) {
+                            return `❌ 编辑失败: ${e.message}`;
+                        }
+                    } else {
+                        try {
+                            // 非 Discord 平台：
+                            // 清除旧消息的表情（防止混淆）
+                            await session.bot.clearReaction(session.channelId, quoteId).catch(() => {});
+
+                            // 发送新消息
+                            const [newMsgId] = await session.bot.sendMessage(session.channelId, fullContent);
+
+                            if (newMsgId) {
+                                // 迁移内存索引 删除旧 ID，绑定新 ID
+                                pendingShifts.delete(quoteId);
+                                pendingShifts.set(newMsgId, data);
+
+                                // 重新贴上表情
+                                const emojis = ['👍', '👎', '🙌', '✅'];
+                                for (const emoji of emojis) {
+                                    reactionQueue.push(() => session.bot.createReaction(session.channelId, newMsgId, emoji));
+                                }
+                                if (!isProcessing) void nextReaction();
+
+                                return `✅ 已重新发布 (新ID: ${newMsgId})`;
+                            }
+                        } catch (e) {
+                            return `❌ 操作失败: ${e.message}`;
+                        }
+                    }
+                });
 
             // --- 识别填班并拆分发送 ---
             ctx.middleware(async (session, next) => {
