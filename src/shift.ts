@@ -286,12 +286,29 @@ export class ShiftTable {
 
     /**
      * 【手动拉取】从 Google Sheets 同步最新数据到内存
-     * 建议在执行任何查询（如渲染图片、获取缺人统计）前调用
      */
     async pull(): Promise<void> {
         if (this.googleSheetHandler) {
             await this.googleSheetHandler.pull(this);
         }
+    }
+
+    /**
+     * 专门给同步工具使用的接口
+     */
+    public setRow(dayIndex: number, hour: number, persons: (string | null)[], color: HourColor) {
+        if (!this.shift_table[dayIndex] || !this.shift_table[dayIndex][hour]) return;
+
+        // 执行赋值
+        this.shift_table[dayIndex][hour].persons = [...persons];
+        this.shift_table[dayIndex][hour].hourColor = color;
+    }
+
+    /**
+     * 获取某单元格数据用于推送
+     */
+    public getRow(dayIndex: number, hour: number): HourBlock | null {
+        return this.shift_table[dayIndex]?.[hour] || null;
     }
 
     /**

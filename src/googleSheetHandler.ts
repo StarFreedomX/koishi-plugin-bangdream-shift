@@ -80,16 +80,16 @@ export class GoogleSheetHandler {
     }
 
     /**
-     * 核心逻辑：直接基于 ShiftTable 的坐标 (d, h) 计算物理行偏移
+     * 核心逻辑：直接基于 ShiftTable 的坐标 (dayIndex, h) 计算物理行偏移
      */
-    private getRowOffset(d: number, h: number): number | null {
+    private getRowOffset(dayIndex: number, h: number): number | null {
         // 第一天在 startHour 之前的时间不在表格内
-        if (d === 0 && h < this.startHour) return null;
+        if (dayIndex === 0 && h < this.startHour) return null;
 
         // 1. 计算过去的天数占用的物理行
         // 每一天占用：24小时 * (1 + 小时行间距) + 1条天间隔行
         const rowsPerFullDay = 24 * (1 + this.rowInterval) + this.dayInterval;
-        const dayOffsetRows = d * rowsPerFullDay;
+        const dayOffsetRows = dayIndex * rowsPerFullDay;
 
         // 2. 计算当天内相对于表格起始小时的偏移
         const hourOffsetRows = (h - this.startHour) * (1 + this.rowInterval);
@@ -114,33 +114,30 @@ export class GoogleSheetHandler {
 
         const rows = res.data.values || [];
 
-        for (let d = 0; d < shiftTable.days; d++) {
+        for (let dayIndex = 0; dayIndex < shiftTable.days; dayIndex++) {
             for (let h = 0; h < 24; h++) {
-                const rowIndex = this.getRowOffset(d, h);
+                const rowIndex = this.getRowOffset(dayIndex, h);
                 if (rowIndex === null || !rows[rowIndex]) continue;
 
                 const currentRow = rows[rowIndex];
 
                 // 处理名字同步
+                const currentPersons: (string | null)[] = [];
                 for (let pIdx = 0; pIdx < 5; pIdx++) {
                     const colIdxInRow = startColIdx + pIdx * (this.colInterval + 1);
-                    // @ts-ignore
-                    shiftTable.shift_table[d][h].persons[pIdx] = currentRow[colIdxInRow] || null;
+                    currentPersons.push(currentRow[colIdxInRow] || null);
                 }
 
                 // 处理颜色检测 (优先级：black > gray > none)
                 let detectedColor: HourColor = 'none';
-
                 for (const type of colorTypeArray) {
                     const colIdx = this.columnToNumber(this.colorCol[type]!);
-                    // 如果该列标在当前行中有勾选标记
                     if (currentRow[colIdx] === '×') {
-                        detectedColor = type; // type 自动符合 HourColor 中的 'black' | 'gray'
-                        break; // 命中高优先级，立即停止搜索
+                        detectedColor = type;
+                        break;
                     }
                 }
-                // @ts-ignore
-                shiftTable.shift_table[d][h].hourColor = detectedColor;
+                shiftTable.setRow(dayIndex, h, currentPersons, detectedColor);
             }
         }
         shiftTable.adjustAllDays();
@@ -161,8 +158,8 @@ export class GoogleSheetHandler {
                 if (offset === null) continue;
                 if (firstRowOffset === null) firstRowOffset = offset;
 
-                // @ts-ignore
-                const block = shiftTable.shift_table[dayIndex][h];
+                // const block = shiftTable.shift_table[dayIndex][h];
+                const block = shiftTable.getRow(dayIndex, h);
                 const name = (block.hourColor !== 'invalid') ? (block.persons[pIdx] || "") : "";
                 columnValues.push([name]);
 
@@ -190,8 +187,8 @@ export class GoogleSheetHandler {
                 if (offset === null) continue;
                 if (firstRowOffset === null) firstRowOffset = offset;
 
-                // @ts-ignore
-                const block = shiftTable.shift_table[dayIndex][h];
+                // const block = shiftTable.shift_table[dayIndex][h];
+                const block = shiftTable.getRow(dayIndex, h);
                 // 如果当前行的颜色正好是该列对应的颜色，填 '×'，否则清空
                 const mark = (block.hourColor === type) ? '×' : '';
                 colorValues.push([mark]);
