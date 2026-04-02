@@ -9,8 +9,8 @@ shiftTable初始化时提供startTs: number, endTs: number, timezone: string = '
 注意一行只能放5人，不能多，少的用null补位确保对齐
 删除方法removeShift(day: number, startHour: number, endHour: number, person: string): number[]
  */
-import { Context, h } from "koishi";
-import { GoogleSheetHandler } from './googleSheetHandler';
+import { Context } from "koishi";
+import { GoogleSheetAuth, GoogleSheetHandler, GoogleSheetParams } from './googleSheetHandler';
 
 export const HOUR_COLORS = ['none', 'black', 'gray', 'invalid'] as const;
 export const RANKINGS = ["main", "10", "50", "100", "1000"] as const;
@@ -135,7 +135,7 @@ export class ShiftTable {
     private _days: number; // 总天数
     private _timezone: string;
     private readonly googleSheetHandler?: GoogleSheetHandler;
-    private readonly gOptions?: GoogleSheetOptions;
+    private readonly gParams?: GoogleSheetParams;
     shiftExchange: ShiftExchange[][] = []; // key: "day","hour"
 
     /**
@@ -143,10 +143,10 @@ export class ShiftTable {
      * @param startTime 活动开始时间 yyyyMMddHH
      * @param endTime 活动结束时间 yyyyMMddHH
      * @param timezone (可选)指定时区，默认UTC+9
-     * @param gOptions (可选)Google Sheet 选项，用于构造处理器
+     * @param gParams (可选)Google Sheet 选项，用于构造处理器
      * @param gAuth
      */
-    constructor(startTime: string, endTime: string, timezone: string = 'Asia/Tokyo', gOptions?: GoogleSheetOptions, gAuth?: GoogleSheetAuth) {
+    constructor(startTime: string, endTime: string, timezone: string = 'Asia/Tokyo', gParams?: GoogleSheetParams, gAuth?: GoogleSheetAuth) {
         // 基础格式校验 (yyyyMMddHH 长度应为 10)
         if (startTime.length !== 10 || endTime.length !== 10) {
             throw new ShiftError("INVALID_TIME_FORMAT", "Invalid time format: expected yyyyMMddHH");
@@ -155,15 +155,8 @@ export class ShiftTable {
         this.eventStartTime = startTime;
         this.eventEndTime = endTime;
         this.timezone = timezone;
-        this.gOptions = gOptions;
-        this.googleSheetHandler = gOptions ? new GoogleSheetHandler(gOptions.spreadsheetId, gAuth, {
-            sheetName: gOptions.sheetName,
-            startCell: gOptions.startCell,
-            colInterval: gOptions.colInterval,
-            rowInterval: gOptions.rowInterval,
-            dayInterval: gOptions.dayInterval,
-            startHour: gOptions.startHour || this.startHour,
-        }) : undefined;
+        this.gParams = gParams;
+        this.googleSheetHandler = gParams ? new GoogleSheetHandler(gParams.spreadsheetId, gAuth, gParams.options) : undefined;
         this.days = this._calcDays();
 
         // 逻辑校验：结束时间不能早于开始时间
@@ -187,7 +180,7 @@ export class ShiftTable {
         eventStartTime: string,
         eventEndTime: string,
         timezone: string,
-        gOptions?: GoogleSheetOptions,
+        gParams?: GoogleSheetParams,
         shift_table: DaySchedule[],
         member_table: memberTable,
         shiftExchange: ShiftExchange[][],
@@ -199,7 +192,7 @@ export class ShiftTable {
             data.eventStartTime,
             data.eventEndTime,
             data.timezone,
-            data.gOptions,
+            data.gParams,
             gAuth
         );
 
@@ -217,7 +210,7 @@ export class ShiftTable {
             eventStartTime: this.eventStartTime,
             eventEndTime: this.eventEndTime,
             timezone: this.timezone,
-            gOptions: this.gOptions,
+            gParams: this.gParams,
             shift_table: this.shift_table,
             member_table: this.member_table,
             shiftExchange: this.shiftExchange,
@@ -800,15 +793,15 @@ export class ShiftTable {
     }
 
     /**
-     * 异步创建 ShiftTable 实例，如果提供 gOptions，则构造处理器并从 Google Sheet 拉取初始数据
+     * 异步创建 ShiftTable 实例，如果提供 gParams，则构造处理器并从 Google Sheet 拉取初始数据
      * @param startTime 活动开始时间 yyyyMMddHH
      * @param endTime 活动结束时间 yyyyMMddHH
      * @param timezone (可选)指定时区，默认UTC+9
-     * @param gOptions (可选)Google Sheet 选项，用于构造处理器
+     * @param gParams (可选)Google Sheet 选项，用于构造处理器
      * @param gAuth (可选)Google Sheet Auth
      */
-    static async create(startTime: string, endTime: string, timezone: string = 'Asia/Tokyo', gOptions?: GoogleSheetOptions, gAuth?: GoogleSheetAuth): Promise<ShiftTable> {
-        const instance = new ShiftTable(startTime, endTime, timezone, gOptions, gAuth);
+    static async create(startTime: string, endTime: string, timezone: string = 'Asia/Tokyo', gParams?: GoogleSheetParams, gAuth?: GoogleSheetAuth): Promise<ShiftTable> {
+        const instance = new ShiftTable(startTime, endTime, timezone, gParams, gAuth);
         await instance.pull();
 
         return instance;
@@ -826,20 +819,6 @@ export class ShiftError extends Error {
     }
 }
 
-export interface GoogleSheetOptions {
-    spreadsheetId: string;
-    sheetName?: string;
-    startCell?: string;
-    colInterval?: number;
-    rowInterval?: number;
-    dayInterval?: number;
-    startHour?: number;
-}
-
-export interface GoogleSheetAuth{
-    client_email: string;
-    private_key: string;
-}
 
 /*
 

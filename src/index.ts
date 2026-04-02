@@ -1,9 +1,9 @@
 import { Context, Schema, Session, Logger, h } from 'koishi'
 import * as utils from "./utils";
-import { HourColor, ShiftTable, Ranking, ShiftError, GoogleSheetOptions, GoogleSheetAuth } from "./shift";
+import { HourColor, ShiftTable, Ranking, ShiftError } from "./shift";
 import {} from 'koishi-plugin-puppeteer'
 import {} from '@koishijs/plugin-adapter-discord'
-import { channel } from "node:diagnostics_channel";
+import { GoogleSheetAuth, GoogleSheetParams } from "./googleSheetHandler";
 
 export const name = 'bangdream-shift'
 export const using = ['puppeteer', 'database'] as const
@@ -145,16 +145,18 @@ export async function apply(ctx: Context, cfg: Config) {
                     let table: ShiftTable;
                     if (options.spreadsheetId) {
                         if (!cfg.googleAuth) return session.text('noGoogleAuth');
-                        const gOptions: GoogleSheetOptions = {
+                        const gParams: GoogleSheetParams = {
                             spreadsheetId: options.spreadsheetId,
-                            sheetName: options.sheetName,
-                            startCell: options.startCell,
-                            colInterval: options.colInterval,
-                            rowInterval: options.rowInterval,
-                            dayInterval: options.dayInterval,
-                            startHour: options.startHour,
+                            options:{
+                                sheetName: options.sheetName,
+                                startCell: options.startCell,
+                                colInterval: options.colInterval,
+                                rowInterval: options.rowInterval,
+                                dayInterval: options.dayInterval,
+                                startHour: options.startHour,
+                            }
                         };
-                        table = await ShiftTable.create(startTs, endTs, cfg.defaultTimezone, gOptions, cfg.googleAuth);
+                        table = await ShiftTable.create(startTs, endTs, cfg.defaultTimezone, gParams, cfg.googleAuth);
                     } else {
                         table = new ShiftTable(startTs, endTs, cfg.defaultTimezone);
                     }
