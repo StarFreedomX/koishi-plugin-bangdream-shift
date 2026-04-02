@@ -827,17 +827,29 @@ export async function apply(ctx: Context, cfg: Config) {
 
                     // 列出报班频道
                     output.push(session.text(".shiftChannels"));
-                    const sc = Object.entries(shiftTable.shift_channels);
-                    if (sc.length === 0) output.push('  (无)');
-                    else sc.forEach(([id, dayIndex]) => output.push(session.text('.shiftChannelItem', { id, day: dayIndex + 1})));
 
+                    // 获取 entries 并根据 dayIndex (数组的第二个元素) 进行排序
+                    const sc = Object.entries(shiftTable.shift_channels)
+                        .sort(([, dayA], [, dayB]) => dayA - dayB); // 升序排列
+
+                    if (sc.length === 0) {
+                        output.push(session.text('.none'));
+                    } else {
+                        // 遍历排序后的数组
+                        sc.forEach(([id, dayIndex]) => {
+                            output.push(session.text('.shiftChannelItem', {
+                                id: `<#${id}>`,
+                                day: dayIndex + 1
+                            }));
+                        });
+                    }
                     output.push('');
 
                     // 列出管理频道
                     output.push(session.text('.managerChannels'));
                     const mc = shiftTable.manager_channels;
                     if (!mc || mc.length === 0) output.push(session.text('.none'));
-                    else mc.forEach(id => output.push(session.text('.managerChannelItem', { id })));
+                    else mc.forEach(id => output.push(session.text('.managerChannelItem', { id: `<#${id}>` })));
 
                     return output.join('\n');
                 });
