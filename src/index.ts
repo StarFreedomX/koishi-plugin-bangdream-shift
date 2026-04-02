@@ -1,8 +1,8 @@
 import { Context, Schema, Session, Logger, h } from 'koishi'
 import * as utils from "./utils";
 import { HourColor, ShiftTable, Ranking, ShiftError } from "./shift";
-import {} from 'koishi-plugin-puppeteer'
-import {} from '@koishijs/plugin-adapter-discord'
+import 'koishi-plugin-puppeteer'
+import '@koishijs/plugin-adapter-discord'
 import { GoogleSheetAuth, GoogleSheetParams } from "./googleSheetHandler";
 
 export const name = 'bangdream-shift'
@@ -913,35 +913,54 @@ export async function apply(ctx: Context, cfg: Config) {
             // --- 识别填班并拆分发送 ---
             ctx.middleware(async (session, next) => {
                 if (!session.channelId || !session.content || session.userId === session.selfId) return;
-                const nickname = session?.event?.user?.nick
+                // --- 提取文本内容 ---
+                const elements = h.parse(session.content);
+                const pureText = elements
+                    .map(el => {
+                        if (el.type === 'text') {
+                            return el.attrs.content;
+                        } else {
+                            return `[${el.type}]`;
+                        }
+                    })
+                    .join('')
+                    .trim();
+
+                // --- 预检：如果没有文字内容且不包含数字，直接跳过 ---
+                if (!pureText && !/\d/.test(session.content)) return next();
+
                 const gid = getGid(session);
                 const curr = await getCurrentShift(ctx, gid);
-                if (!curr) return;
+                if (!curr) return next();
 
+                // 只有确定可能有排班信息（有数字或文字），才去加载表格数据
                 const row = await loadShift(ctx, curr.shift_id, cfg.googleAuth);
                 const { shiftTable } = row;
 
                 // 匹配频道天数
                 const dayIndex = shiftTable.shift_channels[session.channelId] ??
                     shiftTable.shift_channels[`${session.platform}:${session.channelId}`];
-                if (dayIndex === undefined) return;
+                if (dayIndex === undefined) return next();
 
+                const nickname = session?.event?.user?.nick || session.username || session.userId;
                 const timeRegex = new RegExp(cfg.autoRecognizeRegex, 'g');
                 const matches = [...session.content.matchAll(timeRegex)];
 
-                const channelTitle = (await session.bot.getChannel(session.channelId)).name;
-                const quoteContent = `> #${channelTitle}\n> ${nickname}: ${session.content.replaceAll('\n', '\n> ')}`;
+                // 构造引用内容（此时 pureText 肯定不为空，或者是包含数字的内容）
+
+                const channelTitle = (await session.bot.getChannel(session.channelId).catch(() => ({ name: '未知' }))).name;
+                const messageLink = session.platform === 'discord' ? `https://discord.com/channels/${session.guildId}/${session.channelId}/${session.messageId}` : channelTitle;
+
+                const quoteContent = `> ${messageLink}\n> ${nickname}: \n> ${pureText.replaceAll('\n', '\n> ')}`;
 
                 if (matches.length > 0) {
-                    const userName = nickname || session.username || session.userId;
+                    const userName = nickname;
 
-                    // --- 把之前所有消息的勾都删了 ---
+                    // --- 清理旧消息的确认勾 ---
                     for (const [oldMsgId] of pendingShifts.entries()) {
                         for (let targetChannel of shiftTable.manager_channels) {
                             const cleanId = targetChannel.includes(':') ? targetChannel.split(':').pop() : targetChannel;
-                            try {
-                                reactionQueue.push(() => session.bot.deleteReaction(cleanId, oldMsgId, '✅'));
-                            } catch (e) {}
+                            reactionQueue.push(() => session.bot.deleteReaction(cleanId, oldMsgId, '✅').catch(() => {}));
                         }
                     }
 
@@ -964,22 +983,24 @@ export async function apply(ctx: Context, cfg: Config) {
                                     shiftId: curr.shift_id,
                                     timestamp: Date.now()
                                 });
+
                                 const emojis = ['👍', '👎', '🙌'];
                                 if (isLast) emojis.push('✅');
                                 for (const emoji of emojis) {
                                     reactionQueue.push(() => session.bot.createReaction(cleanId, sentMsgId, emoji));
                                 }
-                                if (!isProcessing) nextReaction();
+                                if (!isProcessing) void nextReaction();
                             }
                         }
                     }
                 } else if (/\d/.test(session.content)) {
+                    // --- 没识别到填班但包含数字：提示未识别 ---
                     for (let targetChannel of shiftTable.manager_channels) {
                         const cleanId = targetChannel.includes(':') ? targetChannel.split(':').pop() : targetChannel;
                         try {
                             await session.bot.sendMessage(cleanId, session.text('auto-shift.noMatch', { quote: quoteContent }));
                         } catch (e) {
-                            console.error(e)
+                            console.error(e);
                         }
                     }
                 }
@@ -1115,7 +1136,7 @@ export async function apply(ctx: Context, cfg: Config) {
 
                 if (!eventEntry) return session.text('noEvent');
 
-                const [eventId, value] = eventEntry;
+                const [_eventId, value] = eventEntry;
                 const trackerData = {
                     group_gid: session.cid,
                     tracker: {
@@ -1179,7 +1200,7 @@ export async function apply(ctx: Context, cfg: Config) {
         if (cfg.test.test1) {
             ctx.command('test [param1:text]')
                 .alias('test')
-                .action(async ({ session }, param1) => {
+                .action(async ({  }, param1) => {
                     console.log(param1)
                     // await session.send('测试成功');
                 });
@@ -1188,7 +1209,7 @@ export async function apply(ctx: Context, cfg: Config) {
         if (cfg.test.test2) {
             ctx.command('test2 [param1:text]')
                 .alias('test2')
-                .action(async ({ session }, param1) => {
+                .action(async ({ }, param1) => {
                     console.log(param1)
                     // await session.send('测试成功2');
                 });
