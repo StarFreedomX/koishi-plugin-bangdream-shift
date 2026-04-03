@@ -48,7 +48,7 @@ interface speedIntervalTracker {
 
 interface PendingShift {
     userName: string;
-    day: number;
+    dayIndex: number;
     slot?: { start: number; end: number; action: string }; // 根消息没有 slot
     shiftId: number;
     timestamp: number;
@@ -849,7 +849,7 @@ export async function apply(ctx: Context, cfg: Config) {
                     output.push(session.text('.managerChannels'));
                     const mc = shiftTable.manager_channels;
                     if (!mc || mc.length === 0) output.push(session.text('.none'));
-                    else mc.forEach(id => output.push(session.text('.managerChannelItem', { id: `<#${id}>` })));
+                    else mc.forEach(id => output.push(session.text('.managerChannelItem', { id: `${id}` })));
 
                     return output.join('\n');
                 });
@@ -905,73 +905,95 @@ export async function apply(ctx: Context, cfg: Config) {
                     return session.text('.success', { channel: channel});
                 })
 
-            ctx.command('autoshift.edit <messageLink:string>', '修改排班信息')
-                .option('user', '-u <name:string> 修改姓名')
-                .option('day', '-d <day:number> 修改天数')
-                .option('time', '-t <time:string> 修改时间段')
-                .action(async ({ session, options }, messageLink) => {
-                    const quoteId = session.quote?.id || parseChannelId(messageLink);
-                    if (!quoteId) return session.text('.noQuoteId');
-                    if (!pendingShifts.has(quoteId)) return session.text('.notInPendingList');
+            ctx.middleware(async (session, next) => {
+                await processShiftMessage(session);
+                return next();
+            });
 
-                    const data = pendingShifts.get(quoteId);
+            async function processShiftMessage(session: Session){
+                if (!await canGrant(session)) return session.send(session.text('permission-denied'));
+                // 1. 基础过滤：必须有回复内容，且不是机器人自己发出的
+                const quoteId = session.quote?.id;
+                if (!quoteId || !session.content || session.userId === session.selfId) return;
 
-                    // --- 情况 A: 回复的是根消息（引用消息） ---
-                    if (data.childIds) {
-                        if (options.time) return session.text('.noEditByTotal');
-                        if (!options.user && !options.day) return session.text('lack', { params: 'user/day' });
+                // 2. 检查被回复的消息是否在待处理列表里
+                const data = pendingShifts.get(quoteId);
+                if (!data) return;
 
-                        const newName = options.user || data.userName;
-                        const newDay = options.day !== undefined ? options.day - 1 : data.day;
+                const content = session.content.trim();
+                let isModified = false;
 
-                        // 1. 更新根消息自身数据
-                        data.userName = newName;
-                        data.day = newDay;
+                // --- 回复的是“根消息” ---
+                if (data.childIds) {
+                    // 规则：根消息只允许改天数和名字，不允许改时间
 
-                        // 2. 遍历所有关联的子消息进行修改
-                        for (const childId of data.childIds) {
+                    // 检查是否是纯数字 (修改天数)
+                    if (/^\d+$/.test(content)) {
+                        data.dayIndex = parseInt(content, 10) - 1;
+                        isModified = true;
+                    }
+                    // 检查是否是时间段格式 (报错拦截)
+                    else if (/^\d+\s*-\s*\d+$/.test(content)) {
+                        await session.send(session.text('auto-shift.noSupportTime'));
+                        return;
+                    }
+                    // 其它字符串 (修改名字)
+                    else {
+                        data.userName = content;
+                        isModified = true;
+                    }
+
+                    if (isModified) {
+                        // 批量同步所有子消息
+                        for (const childId of [...data.childIds]) {
                             const childData = pendingShifts.get(childId);
                             if (!childData) continue;
+                            childData.userName = data.userName;
+                            childData.dayIndex = data.dayIndex;
 
-                            childData.userName = newName;
-                            childData.day = newDay;
-
-                            // 更新子消息 UI
-                            const newChildContent = session.text('auto-shift.info', {
-                                day: childData.day + 1,
+                            const newChildText = session.text('auto-shift.info', {
+                                day: childData.dayIndex + 1,
                                 userName: childData.userName,
                                 start: childData.slot.start,
                                 end: childData.slot.end
                             });
-
-                            await updateMessageUI(session, childId, newChildContent, childData);
+                            await updateMessageUI(session, childId, newChildText, childData);
                         }
-                        return session.text('.successAll');
+                        await session.send(session.text('auto-shift.editTotal', { day: data.dayIndex + 1, name: data.userName }));
+                    }
+                }
+
+                // --- 回复的是“子消息”（具体时间段） ---
+                else if (data.slot) {
+                    // 1. 检查是否是时间段 hh-hh
+                    const timeMatch = content.match(/^(\d+)\s*-\s*(\d+)$/);
+                    if (timeMatch) {
+                        data.slot.start = parseInt(timeMatch[1], 10);
+                        data.slot.end = parseInt(timeMatch[2], 10);
+                        isModified = true;
+                    }
+                    // 2. 检查是否是纯数字 (修改天数)
+                    else if (/^\d+$/.test(content)) {
+                        data.dayIndex = parseInt(content, 10) - 1;
+                        isModified = true;
+                    }
+                    // 3. 其它字符串 (修改名字)
+                    else {
+                        data.userName = content;
+                        isModified = true;
                     }
 
-                    // --- 情况 B: 回复的是子消息（时间段消息） ---
-                    else if (data.rootId) {
-                        if (options.user) data.userName = options.user;
-                        if (options.day) data.day = options.day - 1;
-                        if (options.time) {
-                            const match = options.time.match(/(\d+)\s*-\s*(\d+)/);
-                            if (match) {
-                                data.slot.start = parseInt(match[1], 10);
-                                data.slot.end = parseInt(match[2], 10);
-                            }
-                        }
-
-                        const newContent = session.text('auto-shift.info', {
-                            day: data.day + 1,
+                    if (isModified) {
+                        const newText = session.text('auto-shift.info', {
+                            day: data.dayIndex + 1,
                             userName: data.userName,
                             start: data.slot.start,
                             end: data.slot.end
                         });
-
-                        await updateMessageUI(session, quoteId, newContent, data);
-                        return session.text('.success');
+                        await updateMessageUI(session, quoteId, newText, data);
                     }
-                });
+                }
+            }
 
             /**
              * 统一的消息 UI 更新函数
@@ -1111,8 +1133,18 @@ export async function apply(ctx: Context, cfg: Config) {
                 if (matches.length > 0) {
                     const userName = nickname;
                     // 用于收集当前这一组发出的子消息 ID
-                    const currentGroupIds: string[] = [];
-
+                    // const currentGroupIds: string[] = [];
+                    // 遍历内存中所有还在等待的消息，移除它们的提交勾，防止多处提交导致冲突
+                    for (const [oldMsgId, oldData] of pendingShifts.entries()) {
+                        if (oldData.shiftId === curr.shift_id) {
+                            for (let targetChannel of shiftTable.manager_channels) {
+                                const cleanId = targetChannel.includes(':') ? targetChannel.split(':').pop() : targetChannel;
+                                // 使用 reactionQueue 异步处理，避免阻塞主流程
+                                // 加上 try-catch 防止消息太旧无法操作
+                                reactionQueue.push(() => session.bot.deleteReaction(cleanId, oldMsgId, '✅').catch((e) => { console.error(e) }));
+                            }
+                        }
+                    }
                     for (let targetChannel of shiftTable.manager_channels) {
                         const cleanId = targetChannel.includes(':') ? targetChannel.split(':').pop() : targetChannel;
 
@@ -1123,7 +1155,7 @@ export async function apply(ctx: Context, cfg: Config) {
                         // 初始化根消息数据
                         pendingShifts.set(rootId, {
                             userName,
-                            day: dayIndex,
+                            dayIndex: dayIndex,
                             shiftId: curr.shift_id,
                             timestamp: Date.now(),
                             childIds: [] // 稍后填充
@@ -1146,7 +1178,7 @@ export async function apply(ctx: Context, cfg: Config) {
                                 // 存储子消息，记录 rootId
                                 pendingShifts.set(sentMsgId, {
                                     userName,
-                                    day: dayIndex,
+                                    dayIndex: dayIndex,
                                     slot: { start, end, action: 'none' },
                                     shiftId: curr.shift_id,
                                     timestamp: Date.now(),
@@ -1223,8 +1255,8 @@ export async function apply(ctx: Context, cfg: Config) {
                             }
                             // 只有标记了 add 或 del 的才加入处理队列，skip 的不加
                             if (data.slot.action !== 'skip') {
-                                if (!tasksByDay.has(data.day)) tasksByDay.set(data.day, []);
-                                tasksByDay.get(data.day).push({ msgId, ...data });
+                                if (!tasksByDay.has(data.dayIndex)) tasksByDay.set(data.dayIndex, []);
+                                tasksByDay.get(data.dayIndex).push({ msgId, ...data });
                             }
                         }
                     }
@@ -1264,7 +1296,7 @@ export async function apply(ctx: Context, cfg: Config) {
                     for (const [msgId, data] of pendingShifts.entries()) {
                         if (data.shiftId === currentPending.shiftId) {
                             if (data.slot && data.slot.action === 'skip') {
-                                results.push(`- [${session.text('auto-shift.skip')}] ${data.userName} ${data.day + 1}日目 ${data.slot.start}-${data.slot.end}`);
+                                results.push(`- [${session.text('auto-shift.skip')}] ${data.userName} ${data.dayIndex + 1}日目 ${data.slot.start}-${data.slot.end}`);
                             }
                             // 根消息和子消息都要从内存移除
                             pendingShifts.delete(msgId);

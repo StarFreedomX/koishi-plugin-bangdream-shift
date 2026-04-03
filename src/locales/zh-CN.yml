@@ -7,6 +7,8 @@ auto-shift:
     info: '{day}日目 {userName} {start}-{end}'
     finish: '✅ 排班操作成功！<br/><br/>{results}'
     failed: '❌ 提交失败：队列中仍有未处理的消息，请全部标记后再提交（跳过请点 🙌）。'
+    noSupportTime: '❌ 引用头消息不支持统一修改时间，请分别回复具体的时间段消息。'
+    editTotal: '已同步更新该组所有记录为：{day}日目 / {name}'
     noMatch: '{quote}<br/>未识别到时间段'
     add: '添加'
     del: '删除'
@@ -63,15 +65,6 @@ commands:
         messages:
             success: '已将班表管理频道设置为 {channel}'
             remove: '已移除管理频道: {channel}'
-    autoshift:
-        edit:
-            description: '编辑自动排班'
-            messages:
-                noQuoteId: '❌ 请回复待确认的消息或传入消息链接'
-                notInPendingList: '❌ 未找到对应的排班消息，请确保回复了正确的消息或传入了正确的链接'
-                noEditByTotal: '❌ 引用消息不支持统一修改时间，请分别回复具体的时间段消息'
-                successAll: '✅ 已成功同步修改所有关联时间段'
-                success: '✅ 已修改该时间段'
     ls-channels:
         description: '列出当前班表/管理频道'
         messages:
