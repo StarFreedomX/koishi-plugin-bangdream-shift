@@ -1,8 +1,9 @@
 import { Context, Schema, Session, Logger, h } from 'koishi'
 import * as utils from "./utils";
 import { HourColor, ShiftTable, Ranking, ShiftError } from "./shift";
+import Bottleneck from 'bottleneck';
+import { Discord } from '@koishijs/plugin-adapter-discord'
 import {} from 'koishi-plugin-puppeteer'
-import {} from '@koishijs/plugin-adapter-discord'
 import { GoogleSheetAuth, GoogleSheetParams } from "./googleSheetHandler";
 
 export const name = 'bangdream-shift'
@@ -51,6 +52,7 @@ interface PendingShift {
     dayIndex: number;
     slot?: { start: number; end: number; action: string }; // 根消息没有 slot
     shiftId: number;
+    last: boolean;
     timestamp: number;
     // 关系链
     rootId?: string;       // 子消息指向根消息
@@ -911,7 +913,6 @@ export async function apply(ctx: Context, cfg: Config) {
             });
 
             async function processShiftMessage(session: Session){
-                if (!await canGrant(session)) return session.send(session.text('permission-denied'));
                 // 1. 基础过滤：必须有回复内容，且不是机器人自己发出的
                 const quoteId = session.quote?.id;
                 if (!quoteId || !session.content || session.userId === session.selfId) return;
@@ -919,6 +920,8 @@ export async function apply(ctx: Context, cfg: Config) {
                 // 2. 检查被回复的消息是否在待处理列表里
                 const data = pendingShifts.get(quoteId);
                 if (!data) return;
+
+                if (!await canGrant(session)) return session.send(session.text('permission-denied'));
 
                 const content = session.content.trim();
                 let isModified = false;
@@ -1002,7 +1005,7 @@ export async function apply(ctx: Context, cfg: Config) {
              * @param newContent 渲染后的新文本 (auto-shift.info)
              * @param data 内存中的 shift 数据对象
              */
-            async function updateMessageUI(session, oldMsgId, newContent, data) {
+            async function updateMessageUI(session: Session, oldMsgId: string, newContent: string, data: PendingShift) {
                 const channelId = session.channelId;
                 const bot = session.bot;
 
@@ -1022,7 +1025,7 @@ export async function apply(ctx: Context, cfg: Config) {
                 } else {
                     try {
                         // 非 Discord 平台：清除旧反应 -> 发送新消息 -> 迁移 ID
-                        await bot.clearReactions(channelId, oldMsgId).catch(() => {});
+                        await bot.clearReaction(channelId, oldMsgId).catch(() => {});
 
                         const [newMsgId] = await bot.sendMessage(channelId, finalContent);
 
@@ -1045,10 +1048,8 @@ export async function apply(ctx: Context, cfg: Config) {
                             // 只有原本是该组最后一个消息时才加 ✅ (这里可以根据业务逻辑判断)
                             // 简单处理：全部重新贴一遍，或者从原 data 记录状态
                             for (const emoji of emojis) {
-                                reactionQueue.push(() => bot.createReaction(channelId, newMsgId, emoji));
+                                void addTaskToQueue(getTaskQueueKey(channelId, 'emoji'), () => bot.createReaction(channelId, newMsgId, emoji), `task-${newMsgId}-${emoji}`);
                             }
-                            // 触发队列
-                            if (!isProcessing) void nextReaction();
                         }
                     } catch (e) {
                         console.error('[Shift-Reissue-Error]', e);
@@ -1060,30 +1061,140 @@ export async function apply(ctx: Context, cfg: Config) {
             // 内存存储：messageId -> { userId, userName, day, slots, shiftId, timestamp }
             // slots 结构: { start, end, action: 'none' | 'add' | 'del' }
             const pendingShifts: Map<string, PendingShift> = new Map();
-            const reactionQueue: (() => Promise<any>)[] = [];
-            let isProcessing = false;
 
-            const nextReaction = async () => {
-                if (reactionQueue.length === 0) {
-                    isProcessing = false;
-                    return;
+            // 1. 创建限制器组 (Group)
+            const limiterGroup = new Bottleneck.Group({
+                // 这里的配置会应用到该组创建的每一个子限制器上
+                minTime: 350,
+                maxConcurrent: 1,
+                // 队列清理：如果某个频道 5 分钟没动静，自动销毁其限制器以节省内存
+                timeout: 1000 * 60 * 5,
+            });
+
+            // 2. 全局监听组内所有限制器的错误
+            limiterGroup.on('error', (error) => {
+                console.error('[LimiterGroup] 任务执行出错:', error);
+            });
+
+            // 3. 全局监听重试逻辑
+            limiterGroup.on('failed', async (_: Bottleneck, error: Error, jobInfo: Bottleneck.EventInfoRetryable) => {
+                const errorMsg = error.message || 'Unknown Error';
+
+                if (jobInfo.retryCount < 3) {
+                    let retryAfter = 0.3;
+                    // 尝试解析 Discord 的 retry_after
+                    try {
+                        const jsonMatch = errorMsg.match(/\{.*}/);
+                        if (jsonMatch) {
+                            const data = JSON.parse(jsonMatch[0]);
+                            retryAfter = data.retry_after || 0.3;
+                        }
+                    } catch {}
+
+                    const waitMs = Math.ceil(retryAfter * 1000) + jobInfo.retryCount * 200;
+                    console.warn(`[Retry ${jobInfo.retryCount + 1}/3] 任务 ${jobInfo.options.id} 出错，${waitMs}ms 后重试。`);
+
+                    return waitMs;
                 }
-                isProcessing = true;
-                const task = reactionQueue.shift();
-                try {
-                    await task();
-                } catch (e) {
-                    if (e.response?.status === 429) {
-                        console.log(`触发了速率限制，${reactionQueue.length} 个任务待处理，${e.response?.data?.retry_after || 0.5} 秒后重试`);
-                        const delay = (e.response?.data?.retry_after || 0.5) * 1000;
-                        reactionQueue.unshift(task); // 插回队首
-                        ctx.setTimeout(nextReaction, delay + 100);
-                        return;
+                return null;
+            });
+
+            ctx.on('dispose', async () => {
+                bdShiftLogger.info('[Limiter] 插件正在停用，清理所有频道队列...');
+
+                // 1. 获取当前组内所有的限制器对
+                const pairs = limiterGroup.limiters();
+
+                // 2. 并发停止所有限制器
+                await Promise.all(pairs.map(async ({ key, limiter }) => {
+                    try {
+                        await limiter.stop({
+                            // 物理丢弃：丢弃所有接收、排队和执行中的任务
+                            dropWaitingJobs: true,
+                            // 赋予一个明确的错误信息，方便在日志中区分
+                            dropErrorMessage: `Plugin disposed: channel ${key}`,
+                            enqueueErrorMessage: 'Plugin is no longer active'
+                        });
+                        bdShiftLogger.info(`[Limiter] 已停止频道队列: ${key}`);
+                    } catch (e) {
+                        // 忽略已经停止或销毁的报错
                     }
+                }));
+
+                // 逻辑拦截：清空版本令牌 Map
+                latestVersionMap.clear();
+
+                bdShiftLogger.info('[Limiter] 所有队列已切断');
+            });
+
+            // 创建版本管理 Map，记录每个 ID 对应的最新请求版本
+            // Key: 任务 ID (例如: CHECK-频道ID-用户名)
+            // Value: 最新的版本号 (时间戳)
+            const latestVersionMap = new Map<string, number>();
+
+            /**
+             * 辅助函数：深度检查错误是否由插件销毁/上下文关闭引起
+             */
+            const isDisposedError = (e: any): boolean => {
+                const msg = e?.message?.toLowerCase() || '';
+                // 检查基础错误消息
+                if (msg.includes('plugin disposed') || msg.includes('context disposed')) return true;
+                // 处理 Satori/Discord 常见的 AggregateError (套娃错误)
+                if (e?.errors && Array.isArray(e.errors)) {
+                    return e.errors.some((subErr: any) => isDisposedError(subErr));
                 }
-                // 正常间隔 350ms 处理下一个，使用 ctx.setTimeout 保证插件卸载时停止
-                ctx.setTimeout(nextReaction, 350);
+                return false;
             };
+
+            /**
+             * 入队函数
+             * @param queueKey 队列标识（建议传入 getTaskQueueKey），相同 key 的任务会排队
+             * @param task 异步任务
+             * @param id 任务唯一 ID（用于日志和去重）
+             */
+            async function addTaskToQueue(queueKey: string, task: () => Promise<any>, id?: string) {
+                const limiter = limiterGroup.key(queueKey);
+
+                if (id && id.startsWith('CHECK-')) {
+                    const myVersion = Date.now();
+                    latestVersionMap.set(id, myVersion);
+
+                    return limiter.schedule({}, async () => {
+                        // 自检：如果版本不匹配，或插件已停用（Map被清空），直接静默退出
+                        if (!latestVersionMap.has(id) || latestVersionMap.get(id) !== myVersion) {
+                            return [null];
+                        }
+
+                        try {
+                            const result = await task();
+                            return Array.isArray(result) ? result : [result ?? null];
+                        } catch (err) {
+                            if (isDisposedError(err)) return [null];
+                            throw err;
+                        }
+                    });
+                }
+
+                return limiter.schedule({ id }, async () => {
+                    try {
+                        const result = await task();
+                        // 同样确保返回格式始终为数组
+                        return Array.isArray(result) ? result : [result ?? null];
+                    } catch (err) {
+                        // 捕获执行过程中插件被停用的错误 (context disposed)
+                        if (isDisposedError(err)) return [null];
+                        throw err;
+                    }
+                }).catch(err => {
+                    // 捕获排队过程中被 Bottleneck 物理丢弃的错误 (Plugin disposed)
+                    if (isDisposedError(err)) {
+                        return [null];
+                    }
+                    // 真正的业务异常（非卸载导致）才打印日志
+                    console.error(`[Limiter] 任务 ${id || 'unknown'} 执行失败:`, err);
+                    throw err;
+                });
+            }
 
 
 
@@ -1136,71 +1247,110 @@ export async function apply(ctx: Context, cfg: Config) {
                     // const currentGroupIds: string[] = [];
                     // 遍历内存中所有还在等待的消息，移除它们的提交勾，防止多处提交导致冲突
                     for (const [oldMsgId, oldData] of pendingShifts.entries()) {
-                        if (oldData.shiftId === curr.shift_id) {
+                        if (oldData.shiftId === curr.shift_id && oldData.last) {
                             for (let targetChannel of shiftTable.manager_channels) {
                                 const cleanId = targetChannel.includes(':') ? targetChannel.split(':').pop() : targetChannel;
                                 // 使用 reactionQueue 异步处理，避免阻塞主流程
-                                // 加上 try-catch 防止消息太旧无法操作
-                                reactionQueue.push(() => session.bot.deleteReaction(cleanId, oldMsgId, '✅').catch((e) => { console.error(e) }));
+                                void addTaskToQueue(getTaskQueueKey(cleanId, 'emoji'), async () => {
+                                    // 执行前检查：如果已经被别人改过了，直接退出
+                                    const currentData = pendingShifts.get(oldMsgId);
+                                    if (!currentData || !currentData.last) return;
+                                    await session.bot.deleteReaction(cleanId, oldMsgId, '✅');
+                                    const freshData = pendingShifts.get(oldMsgId);
+                                    if (freshData) {
+                                        pendingShifts.set(oldMsgId, { ...freshData, last: false });
+                                    }
+                                }, `delete-check-${oldMsgId}`);
                             }
                         }
                     }
-                    for (let targetChannel of shiftTable.manager_channels) {
-                        const cleanId = targetChannel.includes(':') ? targetChannel.split(':').pop() : targetChannel;
+                    await Promise.all(shiftTable.manager_channels.map(async (targetChannel) => {
+                        try {
+                            const cleanId = targetChannel.includes(':') ? targetChannel.split(':').pop() : targetChannel;
+                            latestVersionMap.set(`CHECK-${getTaskQueueKey(cleanId, 'emoji')}`, -1);
+                            // 1. 发送根引用消息
+                            const [rootId] = await addTaskToQueue(
+                                getTaskQueueKey(cleanId, 'message'),
+                                () => session.bot.sendMessage(cleanId, quoteContent),
+                                `root-${ cleanId }-${ session.messageId }`
+                            ).catch(e => {
+                                bdShiftLogger.error(`[Shift] 根消息发送失败:`, e.message);
+                                return [null];
+                            });
 
-                        // 1. 发送根引用消息
-                        const [rootId] = await session.bot.sendMessage(cleanId, quoteContent);
-                        if (!rootId) continue;
+                            if (!rootId) return;
 
-                        // 初始化根消息数据
-                        pendingShifts.set(rootId, {
-                            userName,
-                            dayIndex: dayIndex,
-                            shiftId: curr.shift_id,
-                            timestamp: Date.now(),
-                            childIds: [] // 稍后填充
-                        });
+                            // 初始化根消息数据
+                            pendingShifts.set(rootId, {
+                                userName,
+                                dayIndex: dayIndex,
+                                shiftId: curr.shift_id,
+                                last: false,
+                                timestamp: Date.now(),
+                                childIds: [] // 稍后填充
+                            });
 
-                        const childIdsForThisRoot: string[] = [];
+                            const childIdsForThisRoot: string[] = [];
 
-                        // 2. 发送各个时间段消息
-                        for (let i = 0; i < matches.length; i++) {
-                            const start = parseInt(matches[i][1], 10);
-                            const end = parseInt(matches[i][2], 10);
-                            const isLast = (i === matches.length - 1);
-                            const confirmContent = session.text('auto-shift.info', { day: dayIndex + 1, userName, start, end });
-
-                            const [sentMsgId] = await session.bot.sendMessage(cleanId, confirmContent);
-
-                            if (sentMsgId) {
-                                childIdsForThisRoot.push(sentMsgId);
-
-                                // 存储子消息，记录 rootId
-                                pendingShifts.set(sentMsgId, {
+                            // 2. 发送各个时间段消息
+                            for (let i = 0; i < matches.length; i++) {
+                                const start = parseInt(matches[i][1], 10);
+                                const end = parseInt(matches[i][2], 10);
+                                const isLast = (i === matches.length - 1);
+                                const confirmContent = session.text('auto-shift.info', {
+                                    day: dayIndex + 1,
                                     userName,
-                                    dayIndex: dayIndex,
-                                    slot: { start, end, action: 'none' },
-                                    shiftId: curr.shift_id,
-                                    timestamp: Date.now(),
-                                    rootId: rootId
+                                    start,
+                                    end
                                 });
 
-                                // 贴表情逻辑...
-                                const emojis = ['👍', '👎', '🙌'];
-                                if (isLast) emojis.push('✅');
-                                for (const emoji of emojis) {
-                                    reactionQueue.push(() => session.bot.createReaction(cleanId, sentMsgId, emoji));
-                                }
+                                void addTaskToQueue(
+                                    getTaskQueueKey(cleanId, 'message'),
+                                    () => session.bot.sendMessage(cleanId, confirmContent),
+                                    `child-${cleanId}-${i}-${Date.now()}`
+                                ).then(([sentMsgId]) => {
+                                    // 只有当消息真的发出去（从队列里轮到它并执行完）后，才会进到这里
+                                    if (!sentMsgId) return;
+
+                                    // 存入内存
+                                    pendingShifts.set(sentMsgId, {
+                                        userName,
+                                        dayIndex: dayIndex,
+                                        slot: { start, end, action: 'none' },
+                                        shiftId: curr.shift_id,
+                                        last: isLast,
+                                        timestamp: Date.now(),
+                                        rootId: rootId
+                                    });
+
+                                    // 2. 贴表情（进入 emoji 队列）
+                                    const emojis = ['👍', '👎', '🙌'];
+                                    // if (isLast) emojis.push('✅');
+                                    for (const emoji of emojis) {
+                                        void addTaskToQueue(
+                                            getTaskQueueKey(cleanId, 'emoji'),
+                                            () => session.bot.createReaction(cleanId, sentMsgId, emoji),
+                                            `task-${sentMsgId}-${emoji}`
+                                        );
+                                    }
+                                    if (isLast) {
+                                        void addTaskToQueue(
+                                            getTaskQueueKey(cleanId, 'emoji'),
+                                            () => session.bot.createReaction(cleanId, sentMsgId, '✅'),
+                                            `CHECK-${getTaskQueueKey(cleanId, 'emoji')}`
+                                        );
+                                    }
+                                });
                             }
+
+                            // 3. 将子消息 ID 关联到根消息
+                            const rootData = pendingShifts.get(rootId);
+                            rootData.childIds = childIdsForThisRoot;
+                            pendingShifts.set(rootId, rootData);
+                        } catch (err) {
+                            bdShiftLogger.error(`[Shift] 频道处理异常:`, err);
                         }
-
-                        // 3. 将子消息 ID 关联到根消息
-                        const rootData = pendingShifts.get(rootId);
-                        rootData.childIds = childIdsForThisRoot;
-                        pendingShifts.set(rootId, rootData);
-
-                        if (!isProcessing) void nextReaction();
-                    }
+                    }))
                 } else if (/\d/.test(session.content)) {
                     // --- 没识别到填班但包含数字：提示未识别 ---
                     for (let targetChannel of shiftTable.manager_channels) {
@@ -1208,7 +1358,7 @@ export async function apply(ctx: Context, cfg: Config) {
                         try {
                             await session.bot.sendMessage(cleanId, session.text('auto-shift.noMatch', { quote: quoteContent }));
                         } catch (e) {
-                            console.error(e);
+                            bdShiftLogger.error(e);
                         }
                     }
                 }
@@ -1231,7 +1381,7 @@ export async function apply(ctx: Context, cfg: Config) {
                         '🙌': 'skip' // 标记为跳过
                     };
                     currentPending.slot.action = actionMap[session.content];
-                    console.log(`[标记] 消息 ${session.messageId} 状态改为: ${currentPending.slot.action}`);
+                    bdShiftLogger.info(`[标记] ${session?.event?.user?.nick ?? session?.event?.user?.name ??session?.username } 操作 消息 ${session.messageId} 状态改为: ${currentPending.slot.action}`);
                     return;
                 }
 
@@ -1483,18 +1633,21 @@ async function isShiftOwner(ctx: Context, gid: string, shift_id: number) {
 /**
  * 检查用户权限
  */
-async function canGrant(session) {
+async function canGrant(session: Session) {
     // 单人作用域直接放行
     if (!session.guildId) return true;
 
     // 本地权限
     // 使用 Set 提高查找效率
-    const rolesSet = new Set([
-        ...(session.event.member?.roles || []),
-        ...(session.author.roles || [])
+    const rolesSet = new Set<string>([
+        ...(session.event.member?.roles || []).map(r => {
+            if (typeof r === 'string') return r;
+            return r.id;
+        })
     ]);
 
-    if (session.user.authority > 1 || rolesSet.has('admin') || rolesSet.has('owner')) {
+    const user = await session.observeUser(['authority']);
+    if (user.authority > 1 || rolesSet.has('admin') || rolesSet.has('owner')) {
         return true;
     }
 
@@ -1532,6 +1685,10 @@ async function canGrant(session) {
 
 function getGid(session: Session) {
     return session.guild || session.event.guild ? session.gid ?? `${session.event.platform}:${session.event.guild.id}` : session.uid
+}
+
+function getTaskQueueKey(channelId: string, type: string) {
+    return `${channelId}-${type}`
 }
 
 
