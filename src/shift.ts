@@ -837,64 +837,21 @@ export class ShiftError extends Error {
 }
 
 
-/*
+export interface ShiftTableSchema {
+    eventStartTime: string,
+    eventEndTime: string,
+    timezone: string,
+    gParams?: GoogleSheetParams,
+    shift_table: DaySchedule[],
+    member_table: memberTable,
+    shiftExchange: ShiftExchange[][],
+    manager_channels?: string[],
+    shift_channels?: { [channelId:string]: number; }
+}
 
-const shiftTable = new ShiftTable('2025111114', '2025111320');
-
-shiftTable.setRanking('Main', 'main')
-shiftTable.setRanking('Alice', '10')
-
-
-shiftTable.addShift(0, 15, 24, 'Main');
-shiftTable.addShift(1, 0, 24, 'Main');
-shiftTable.addShift(1, 2, 5, 'Alice');
-shiftTable.addShift(1, 3, 6, 'Bob');
-shiftTable.addShift(1, 6, 8, 'CAI');
-shiftTable.addShift(1, 5, 7, 'Dod');
-shiftTable.addShift(1, 5, 7, 'Err');
-shiftTable.addShift(1, 5, 7, 'Faa');
-// shiftTable.addShift(0, 4, 8, 'Grok');
-shiftTable.setShiftColor(1, 4, 6, 'black');
-
-
-// console.dir(shiftTable.exportSchedule(), {depth: null})
-// console.dir(shiftTable, {depth: null})
-// console.log(shiftTable.renderDay(0));
-fs.writeFileSync('test.html', shiftTable.renderShiftHTML(1))
-// fs.writeFileSync('test.html', shiftTable.renderShiftExchangeHTML(0))
-// console.log(shiftTable.getPersons(0, 14));
-// console.log(shiftTable.getPersons(0, 17));
-// console.log(shiftTable.getShiftExchange(0, 15));
-*/
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+// 历史版本的特征字段（用于识别旧数据）
+export interface LegacyShiftTableSchema extends Partial<ShiftTableSchema> {
+    _eventStartTime?: string;
+    _eventEndTime?: string;
+    _timezone?: string;
+}

@@ -1,6 +1,6 @@
 import { Context, Schema, Session, Logger, h } from 'koishi'
 import * as utils from "./utils";
-import { HourColor, ShiftTable, Ranking, ShiftError } from "./shift";
+import { HourColor, ShiftTable, Ranking, ShiftError, ShiftTableSchema, LegacyShiftTableSchema } from "./shift";
 import Bottleneck from 'bottleneck';
 import { Discord } from '@koishijs/plugin-adapter-discord'
 import {} from 'koishi-plugin-puppeteer'
@@ -71,6 +71,7 @@ export interface Config {
         client_email: string;
         private_key: string;
     };
+    enableDataRepair: boolean;
     test?: {
         test1: boolean,
         test2: boolean
@@ -81,29 +82,40 @@ export enum Server {
     jp, en, tw, cn, kr
 }
 
-export const Config = Schema.object({
-    openSpeedTracker: Schema.boolean().default(false).description('允许群聊开启定时查询车速'),
-    openShift: Schema.boolean().default(false).description('开启班表管理功能'),
-    autoRecognize: Schema.boolean().default(false).description('班表自动识别'),
-    autoRecognizeRegex: Schema.string().default("(\\d{1,2})[ー\\-\\~～;；](\\d{1,2})").description('识别填班的正则表达式'),
-    defaultTimezone: Schema.string().default('Asia/Tokyo'),
-    defaultServer: Schema.union([
-        Schema.const(Server.jp).description('jp'),
-        Schema.const(Server.cn).description('cn'),
-        Schema.const(Server.en).description('en'),
-        Schema.const(Server.tw).description('tw'),
-        Schema.const(Server.kr).description('kr')
-    ]).default(Server.jp).description('默认服务器'),
-    backendUrl: Schema.string().default('http://localhost:3000').description('后端服务器地址'),
-    googleAuth: Schema.object({
-        client_email: Schema.string().description('Google Service Account Client Email'),
-        private_key: Schema.string().role('secret').description('Google Service Account Private Key')
+export const Config = Schema.intersect([
+    Schema.object({
+        openSpeedTracker: Schema.boolean().default(false).description('允许群聊开启定时查询车速'),
+        openShift: Schema.boolean().default(false).description('开启班表管理功能'),
+        autoRecognize: Schema.boolean().default(false).description('班表自动识别'),
+        autoRecognizeRegex: Schema.string().default("(\\d{1,2})[ー\\-\\~～;；](\\d{1,2})").description('识别填班的正则表达式'),
+        defaultTimezone: Schema.string().default('Asia/Tokyo'),
+    }).description('班表基础设置'),
+    Schema.object({
+        defaultServer: Schema.union([
+            Schema.const(Server.jp).description('jp'),
+            Schema.const(Server.cn).description('cn'),
+            Schema.const(Server.en).description('en'),
+            Schema.const(Server.tw).description('tw'),
+            Schema.const(Server.kr).description('kr')
+        ]).default(Server.jp).description('默认服务器'),
+        backendUrl: Schema.string().default('http://localhost:3000').description('后端服务器地址'),
+    }).description('数据推送设置'),
+    Schema.object({
+        googleAuth: Schema.object({
+            client_email: Schema.string().description('Google Service Account Client Email'),
+            private_key: Schema.string().role('secret').description('Google Service Account Private Key')
+        }),
     }).description('Google Sheets认证信息'),
-    test: Schema.object({
-        test1: Schema.boolean().default(false),
-        test2: Schema.boolean().default(false)
-    })
-})
+    Schema.object({
+        enableDataRepair: Schema.boolean().default(false).description('加载时扫描并修复数据库结构'),
+        test: Schema.object({
+            test1: Schema.boolean().default(false),
+            test2: Schema.boolean().default(false)
+        })
+    }).description('高级选项'),
+
+
+])
 
 export async function apply(ctx: Context, cfg: Config) {
     ctx.i18n.define('zh-CN', require('./locales/zh-CN'));
@@ -1572,6 +1584,60 @@ export async function apply(ctx: Context, cfg: Config) {
                     console.log(param1)
                     // await session.send('测试成功2');
                 });
+        }
+    }
+
+    if (cfg.enableDataRepair){
+
+        const logger = ctx.logger('bangdream-shift/repair');
+        logger.info('开始扫描旧版班表数据...');
+
+        // 1. 获取所有班表记录
+        const records = await ctx.database.get('bangdream_shift', {});
+        let fixedCount = 0;
+
+        for (const record of records) {
+            const raw = record.shiftTable as unknown as LegacyShiftTableSchema;
+
+            // 2. 识别标志位：如果存在 _eventStartTime，说明是旧版
+            if (raw._eventStartTime || raw._eventEndTime) {
+                try {
+                    // 3. 执行结构转换
+                    const upgraded: ShiftTableSchema = {
+                        // 基础时间映射
+                        eventStartTime: raw.eventStartTime ?? raw._eventStartTime ?? "",
+                        eventEndTime: raw.eventEndTime ?? raw._eventEndTime ?? "",
+                        timezone: raw.timezone ?? raw._timezone ?? "Asia/Tokyo",
+
+                        // gParams 补位
+                        gParams: raw.gParams ?? undefined,
+
+                        // 表格数据透传
+                        shift_table: raw.shift_table ?? [],
+                        member_table: raw.member_table ?? {},
+                        shiftExchange: raw.shiftExchange ?? [],
+
+                        // 频道配置补位
+                        manager_channels: raw.manager_channels ?? [],
+                        shift_channels: raw.shift_channels ?? {}
+                    };
+
+                    // 4. 更新回数据库（绕过实例，直接存入清洗后的纯对象）
+                    await ctx.database.set('bangdream_shift', { id: record.id }, {
+                        shiftTable: upgraded as any
+                    });
+
+                    fixedCount++;
+                } catch (e) {
+                    logger.error(`修复记录 ${record.id} 失败:`, e);
+                }
+            }
+        }
+
+        if (fixedCount > 0) {
+            logger.success(`成功修复 ${fixedCount} 条旧版班表数据！请记得在配置中关闭修复模式。`);
+        } else {
+            logger.info('未发现需要修复的旧版数据。');
         }
     }
 }
