@@ -1235,12 +1235,15 @@ export async function apply(ctx: Context, cfg: Config) {
             });
 
             // 处理表情标记与最终提交
+            // 计数器
+            const forceSubmitCounter = new Map();
             ctx.on('reaction-added', async (session) => {
                 if (session.userId === session.selfId) return;
                 const currentPending = queue.pendingShifts.get(session.messageId);
                 if (!currentPending || !currentPending.slot) return;
 
                 const cleanId= session.channelId;
+                const sid = currentPending.shiftId;
 
                 // 在 reaction-added 监听中
                 if (['👍', '👎', '🙌'].includes(session.content)) {
@@ -1256,48 +1259,57 @@ export async function apply(ctx: Context, cfg: Config) {
 
                 // 提交动作
                 if (session.content === '✅') {
-                    const row = await loadShift(ctx, currentPending.shiftId, cfg.googleAuth);
-                    const { shiftTable } = row;
-
                     const tasksByDay = new Map();
+                    const messagesToRemove = [];
+                    const skippedItems = [];
+                    const unProcessedItems = [];
                     let hasUnprocessed = false;
 
                     // 第一遍扫描：合法性检查
                     for (const [msgId, data] of queue.pendingShifts.entries()) {
                         // 只检查同一个班表项目下的任务
-                        if (data.shiftId === currentPending.shiftId) {
+                        if (data.shiftId === sid) {
                             if (!data.slot) continue;
+                            const desc = `${data.userName} ${data.dayIndex + 1}日目 ${data.slot.start}-${data.slot.end}`;
 
                             if (data.slot.action === 'none') {
                                 hasUnprocessed = true;
-                                break;
+                                unProcessedItems.push(`- [${session.text('auto-shift.unprocessed') || '未处理'}] ${desc}`);
+                                continue;
                             }
-                            // 只有标记了 add 或 del 的才加入处理队列，skip 的不加
-                            if (data.slot.action !== 'skip') {
+
+                            messagesToRemove.push(msgId);
+                            const action = data.slot.action;
+                            if (action === 'skip') {
+                                skippedItems.push(`- [${session.text('auto-shift.skip')}] ${desc}`);
+                            } else if (action === 'add' || action === 'del') {
                                 if (!tasksByDay.has(data.dayIndex)) tasksByDay.set(data.dayIndex, []);
                                 tasksByDay.get(data.dayIndex).push({ msgId, ...data });
                             }
                         }
                     }
 
+                    // --- 强制提交逻辑检测 ---
+                    let count = (forceSubmitCounter.get(sid) || 0) + 1;
+                    forceSubmitCounter.set(sid, count);
+
                     // --- 如果有没点的，直接拦截并提示 ---
-                    if (hasUnprocessed) {
+                    if (hasUnprocessed && count < 3) {
                         await session.bot.sendMessage(cleanId, session.text('auto-shift.failed'));
                         return;
                     }
 
-                    const results = [];
-
                     // --- 执行处理逻辑 ---
-
+                    const results = [];
                     // 只有当确实有 add/del 任务时，才执行数据库操作
                     if (tasksByDay.size > 0) {
+                        const row = await loadShift(ctx, sid, cfg.googleAuth);
+                        const { shiftTable } = row;
                         await shiftTable.pull();
+
                         for (const [dayIndex, tasks] of tasksByDay.entries()) {
                             for (const task of tasks) {
-                                const actionText = task.slot.action === 'add'
-                                    ? session.text('auto-shift.add')
-                                    : session.text('auto-shift.del');
+                                const actionText = session.text(`auto-shift.${task.slot.action}`);
 
                                 if (task.slot.action === 'add') {
                                     await shiftTable.addShift(dayIndex, task.slot.start, task.slot.end, task.userName, true);
@@ -1309,20 +1321,22 @@ export async function apply(ctx: Context, cfg: Config) {
                             }
                             await shiftTable.pushDay(dayIndex);
                         }
+                        await saveShift(ctx, row);
                     }
-
-                    // 统一清理内存并记录 skip 项
-                    for (const [msgId, data] of queue.pendingShifts.entries()) {
-                        if (data.shiftId === currentPending.shiftId) {
-                            if (data.slot && data.slot.action === 'skip') {
-                                results.push(`- [${session.text('auto-shift.skip')}] ${data.userName} ${data.dayIndex + 1}日目 ${data.slot.start}-${data.slot.end}`);
-                            }
-                            // 根消息和子消息都要从内存移除
-                            queue.pendingShifts.delete(msgId);
+                    results.push(...skippedItems);
+                    // 如果是强制提交(count >= 3)，清理该 shiftId 下的所有消息，防止幽灵残留
+                    if (count >= 3) {
+                        for (const [msgId, data] of queue.pendingShifts.entries()) {
+                            if (data.shiftId === sid) queue.pendingShifts.delete(msgId);
                         }
+                        results.push(...unProcessedItems); // 把未处理的项也列出来，提示用户哪些没处理
+                        results.push(session.text('auto-shift.force-cleaned')); // 提示已强制清理
+                    } else {
+                        // 正常清理：只删除本次处理了的消息
+                        messagesToRemove.forEach(id => queue.pendingShifts.delete(id));
                     }
-
-                    await saveShift(ctx, row);
+                    // 重置计数器
+                    forceSubmitCounter.delete(sid);
 
                     if (results.length > 0) {
                         const summary = session.text('auto-shift.finish', { results: results.join('\n') });

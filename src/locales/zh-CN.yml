@@ -7,12 +7,14 @@ auto-shift:
     info: '{day}日目 {userName} {start}-{end}'
     finish: '✅ 排班操作成功！<br/><br/>{results}'
     failed: '❌ 提交失败：队列中仍有未处理的消息，请全部标记后再提交（跳过请点 🙌）。'
+    force-cleaned: '⚠️ 强制清理了未处理的消息队列，已跳过之前所有未处理的消息。'
     noSupportTime: '❌ 引用头消息不支持统一修改时间，请分别回复具体的时间段消息。'
     editTotal: '已同步更新该组所有记录为：{day}日目 / {name}'
     noMatch: '{quote}<br/>未识别到时间段'
     add: '添加'
     del: '删除'
     skip: '跳过'
+    unprocessed: '未处理'
 
 commands:
     create-shift:

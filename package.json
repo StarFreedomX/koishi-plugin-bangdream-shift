@@ -1,7 +1,7 @@
 {
     "name": "koishi-plugin-bangdream-shift",
     "description": "bangdream排班表插件",
-    "version": "2.0.0-alpha.9",
+    "version": "2.0.0-alpha.10",
     "contributors": [
         "StarFreedomX <starfreedomx@outlook.com>"
     ],
