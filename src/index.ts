@@ -939,7 +939,7 @@ export async function apply(ctx: Context, cfg: Config) {
                 let isModified = false;
 
                 // --- 回复的是“根消息” ---
-                if (data.childIds) {
+                if (data.childIds?.length) {
                     // 规则：根消息只允许改天数和名字，不允许改时间
 
                     // 检查是否是纯数字 (修改天数)
@@ -1334,6 +1334,8 @@ export async function apply(ctx: Context, cfg: Config) {
                                         timestamp: Date.now(),
                                         rootId: rootId
                                     });
+
+                                    childIdsForThisRoot.push(sentMsgId);
 
                                     // 2. 贴表情（进入 emoji 队列）
                                     const emojis = ['👍', '👎', '🙌'];
