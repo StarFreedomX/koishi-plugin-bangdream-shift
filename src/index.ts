@@ -5,6 +5,14 @@ import Bottleneck from 'bottleneck';
 import { Discord } from '@koishijs/plugin-adapter-discord'
 import {} from 'koishi-plugin-puppeteer'
 import { GoogleSheetAuth, GoogleSheetParams } from "./googleSheetHandler";
+import { PendingShift, QueueManager } from "./queueManager";
+import { paresMessageList, getGid, canGrant, isShiftOwner,
+    getCurrentShift, loadShift, saveShift, roundToNearestHour,
+    getTaskQueueKey, hoursToRanges, getDataFromBackend,
+    getReplyFromBackend, parseChannelId, readJson,
+    commandTopRateRanking, getFuzzySearchResult,
+    serverNameFuzzySearchResult
+} from './utils'
 
 export const name = 'bangdream-shift'
 export const using = ['puppeteer', 'database'] as const
@@ -47,16 +55,8 @@ interface speedIntervalTracker {
     deadlineStamp: number,
 }
 
-interface PendingShift {
-    userName: string;
-    dayIndex: number;
-    slot?: { start: number; end: number; action: string }; // 根消息没有 slot
-    shiftId: number;
-    last: boolean;
-    timestamp: number;
-    // 关系链
-    rootId?: string;       // 子消息指向根消息
-    childIds?: string[];   // 根消息指向所有子消息
+export enum Server {
+    jp, en, tw, cn, kr
 }
 
 export interface Config {
@@ -75,12 +75,16 @@ export interface Config {
     test?: {
         test1: boolean,
         test2: boolean
+    },
+    limiter: {
+        minTime: number,
+        maxConcurrent: number,
+        timeout: number,
+        maxRetryCounts: number
     }
 }
 
-export enum Server {
-    jp, en, tw, cn, kr
-}
+
 
 export const Config = Schema.intersect([
     Schema.object({
@@ -111,7 +115,13 @@ export const Config = Schema.intersect([
         test: Schema.object({
             test1: Schema.boolean().default(false),
             test2: Schema.boolean().default(false)
-        })
+        }),
+        limiter: Schema.object({
+            minTime: Schema.number().default(400).description('限流器最短请求间隔'),
+            maxConcurrent: Schema.number().default(1).description('限流器最大并发数'),
+            timeout: Schema.number().default(1000 * 60 * 5).description('限流器清理内存时间'),
+            maxRetryCounts: Schema.number().default(3).description('限流器重试次数')
+        }).description('限流器设置')
     }).description('高级选项'),
 
 
@@ -121,6 +131,9 @@ export async function apply(ctx: Context, cfg: Config) {
     ctx.i18n.define('zh-CN', require('./locales/zh-CN'));
     ctx.i18n.define('ja-JP', require('./locales/ja-JP'));
     ctx.i18n.define('zh-TW', require('./locales/zh-TW'));
+
+    const queue = new QueueManager(ctx, cfg);
+
 
     ctx.model.extend('bangdream_shift', {
         id: 'unsigned',
@@ -251,8 +264,8 @@ export async function apply(ctx: Context, cfg: Config) {
                 bdShiftLogger.info(session.userId, 'try to set shift ending: ', end);
                 if (!await canGrant(session)) return session.text('permission-denied');
                 if (!end) return session.text('lack', { params: 'start/end' });
-                const curr = await getCurrentShift(ctx, getGid(session))
-                if (!curr) return session.text('noGroups');
+                const row = await autoLoadShift(session);
+                if (!row) return session.text('noGroups');
                 let endTs: string;
                 try {
                     endTs = roundToNearestHour(end)
@@ -266,7 +279,6 @@ export async function apply(ctx: Context, cfg: Config) {
                     }
                     throw e;
                 }
-                const row = await loadShift(ctx, curr.shift_id, cfg.googleAuth)
                 await row.shiftTable.setEndTime(endTs)
                 await saveShift(ctx, row)
                 return session.text('.success', { name: row.name })
@@ -333,10 +345,8 @@ export async function apply(ctx: Context, cfg: Config) {
                     return session.text('lack', { params: 'person/day/startHour/endHour' });
                 }
 
-                const curr = await getCurrentShift(ctx, getGid(session));
-                if (!curr) return session.text('noGroups');
-
-                const row = await loadShift(ctx, curr.shift_id, cfg.googleAuth);
+                const row = await autoLoadShift(session);
+                if (!row) return session.text('noGroups');
                 if (day <= 0 || day > row.shiftTable.days) return session.text('outOfDay');
 
                 // 收集所有时间段
@@ -398,10 +408,8 @@ export async function apply(ctx: Context, cfg: Config) {
                     return session.text('lack', { params: 'person/day/startHour/endHour' });
                 }
 
-                const curr = await getCurrentShift(ctx, getGid(session));
-                if (!curr) return session.text('noGroups');
-
-                const row = await loadShift(ctx, curr.shift_id, cfg.googleAuth);
+                const row = await autoLoadShift(session);
+                if (!row) return session.text('noGroups');
                 if (day <= 0 || day > row.shiftTable.days) return session.text('outOfDay');
 
                 // 收集所有时间段
@@ -456,10 +464,8 @@ export async function apply(ctx: Context, cfg: Config) {
 
                 if (!await canGrant(session)) return session.text('permission-denied');
 
-                const curr = await getCurrentShift(ctx, getGid(session));
-                if (!curr) return session.text('noGroups');
-
-                const row = await loadShift(ctx, curr.shift_id, cfg.googleAuth);
+                const row = await autoLoadShift(session);
+                if (!row) return session.text('noGroups');
                 if (day <= 0 || day > row.shiftTable.days) return session.text('outOfDay');
 
                 // 收集所有时间段
@@ -518,10 +524,8 @@ export async function apply(ctx: Context, cfg: Config) {
                 if (!day || !text) return session.text('lack', { params: 'day/text' });
                 if (!await canGrant(session)) return session.text('permission-denied');
 
-                const curr = await getCurrentShift(ctx, getGid(session));
-                if (!curr) return session.text('noGroups');
-
-                const row = await loadShift(ctx, curr.shift_id, cfg.googleAuth);
+                const row = await autoLoadShift(session);
+                if (!row) return session.text('noGroups');
                 // 校验天数范围（1 到 n）
                 if (day <= 0 || day > row.shiftTable.days) return session.text('outOfDay');
 
@@ -624,10 +628,8 @@ export async function apply(ctx: Context, cfg: Config) {
                 const validRankings = ['main', '10', '50', '100', '1000'];
                 if (!validRankings.includes(ranking)) return session.text('.invalidRanking', { validRankings: validRankings.join(',') });
 
-                const curr = await getCurrentShift(ctx, getGid(session))
-                if (!curr) return session.text('noGroups');
-
-                const row = await loadShift(ctx, curr.shift_id, cfg.googleAuth)
+                const row = await autoLoadShift(session);
+                if (!row) return session.text('noGroups');
                 row.shiftTable.setRanking(name, ranking);
 
                 await saveShift(ctx, row)
@@ -641,10 +643,8 @@ export async function apply(ctx: Context, cfg: Config) {
                 if (!await canGrant(session)) return session.text('permission-denied');
                 if (!name) return session.text('lack', { params: 'name' });
 
-                const curr = await getCurrentShift(ctx, getGid(session))
-                if (!curr) return session.text('noGroups');
-
-                const row = await loadShift(ctx, curr.shift_id, cfg.googleAuth)
+                const row = await autoLoadShift(session);
+                if (!row) return session.text('noGroups');
 
                 row.shiftTable.setRanking(name, undefined);
                 await saveShift(ctx, row)
@@ -656,10 +656,8 @@ export async function apply(ctx: Context, cfg: Config) {
                 bdShiftLogger.info(session.userId, 'try to rename person: ', oldName, newName);
                 if (!await canGrant(session)) return session.text('permission-denied');
                 if (!oldName || !newName) return session.text('lack', { params: 'oldName/newName' });
-                const curr = await getCurrentShift(ctx, getGid(session));
-                if (!curr) return session.text('noGroups');
-
-                const row = await loadShift(ctx, curr.shift_id, cfg.googleAuth);
+                const row = await autoLoadShift(session);
+                if (!row) return session.text('noGroups');
 
                 await row.shiftTable.renamePerson(oldName, newName);
 
@@ -673,10 +671,9 @@ export async function apply(ctx: Context, cfg: Config) {
                 bdShiftLogger.info(session.userId, 'try to show shift: ', day);
                 if (!day) return session.text('lack', { params: 'day' });
 
-                const curr = await getCurrentShift(ctx, getGid(session))
-                if (!curr) return session.text('noGroups');
+                const row = await autoLoadShift(session);
+                if (!row) return session.text('noGroups');
 
-                const row = await loadShift(ctx, curr.shift_id, cfg.googleAuth)
                 if (day <= 0 || day > row.shiftTable.days) return session.text('outOfDay');
 
                 const image = await row.shiftTable.renderShiftImage(ctx, day - 1);
@@ -691,10 +688,9 @@ export async function apply(ctx: Context, cfg: Config) {
                 bdShiftLogger.info(session.userId, 'try to show shift exchange: ', day);
                 if (!day) return session.text('lack', { params: 'day' });
 
-                const curr = await getCurrentShift(ctx, getGid(session))
-                if (!curr) return session.text('noGroups');
+                const row = await autoLoadShift(session);
+                if (!row) return session.text('noGroups');
 
-                const row = await loadShift(ctx, curr.shift_id, cfg.googleAuth)
                 if (day <= 0 || day > row.shiftTable.days) return session.text('outOfDay');
                 // puppeteer 截图
                 const image = await row.shiftTable.renderShiftExchangeImage(ctx, day - 1);
@@ -709,10 +705,9 @@ export async function apply(ctx: Context, cfg: Config) {
                 bdShiftLogger.info(session.userId, 'try to show shift left: ', day);
                 if (!day) return session.text('lack', { params: 'day' });
 
-                const curr = await getCurrentShift(ctx, getGid(session))
-                if (!curr) return session.text('noGroups');
+                const row = await autoLoadShift(session);
+                if (!row) return session.text('noGroups');
 
-                const row = await loadShift(ctx, curr.shift_id, cfg.googleAuth);
                 const missingCount = await row.shiftTable.getMissingCount(day - 1);
                 if (!missingCount || missingCount.length !== 24) return session.text('outOfDay');
 
@@ -807,10 +802,9 @@ export async function apply(ctx: Context, cfg: Config) {
                 if (!validColors.includes(color as HourColor)) {
                     return session.text('.invalidColor', { validColors: validColors.join(' / ') });
                 }
-                const curr = await getCurrentShift(ctx, getGid(session))
-                if (!curr) return session.text('noGroups')
+                const row = await autoLoadShift(session);
+                if (!row) return session.text('noGroups');
 
-                const row = await loadShift(ctx, curr.shift_id, cfg.googleAuth)
 
                 const hours = await row.shiftTable.setShiftColor(
                     day - 1,
@@ -878,9 +872,8 @@ export async function apply(ctx: Context, cfg: Config) {
 
                     channel = parseChannelId(channel);
 
-                    const curr = await getCurrentShift(ctx, getGid(session));
-                    if (!curr) return;
-                    const row = await loadShift(ctx, curr.shift_id, cfg.googleAuth);
+                    const row = await autoLoadShift(session);
+                    if (!row) return;
                     const { shiftTable } = row;
                     if (options.delete) {
                         shiftTable.deleteShiftChannel(channel);
@@ -902,10 +895,8 @@ export async function apply(ctx: Context, cfg: Config) {
 
                     channel = parseChannelId(channel);
 
-                    const curr = await getCurrentShift(ctx, getGid(session));
-                    if (!curr) return;
-
-                    const row = await loadShift(ctx, curr.shift_id, cfg.googleAuth);
+                    const row = await autoLoadShift(session);
+                    if (!row) return;
                     const { shiftTable } = row;
 
                     if (options.delete) {
@@ -930,7 +921,7 @@ export async function apply(ctx: Context, cfg: Config) {
                 if (!quoteId || !session.content || session.userId === session.selfId) return;
 
                 // 2. 检查被回复的消息是否在待处理列表里
-                const data = pendingShifts.get(quoteId);
+                const data = queue.pendingShifts.get(quoteId);
                 if (!data) return;
 
                 if (!await canGrant(session)) return session.send(session.text('permission-denied'));
@@ -961,7 +952,7 @@ export async function apply(ctx: Context, cfg: Config) {
                     if (isModified) {
                         // 批量同步所有子消息
                         for (const childId of [...data.childIds]) {
-                            const childData = pendingShifts.get(childId);
+                            const childData = queue.pendingShifts.get(childId);
                             if (!childData) continue;
                             childData.userName = data.userName;
                             childData.dayIndex = data.dayIndex;
@@ -1029,7 +1020,7 @@ export async function apply(ctx: Context, cfg: Config) {
                         // Discord 平台：直接原地编辑
                         await bot.editMessage(channelId, oldMsgId, finalContent);
                         // 内存数据已在外部修改，直接 set 确保同步
-                        pendingShifts.set(oldMsgId, data);
+                        queue.pendingShifts.set(oldMsgId, data);
                     } catch (e) {
                         console.error('[Shift-Edit-Error]', e);
                         throw new Error('Discord 消息编辑失败');
@@ -1043,12 +1034,12 @@ export async function apply(ctx: Context, cfg: Config) {
 
                         if (newMsgId) {
                             // 1. 迁移内存索引
-                            pendingShifts.delete(oldMsgId);
-                            pendingShifts.set(newMsgId, data);
+                            queue.pendingShifts.delete(oldMsgId);
+                            queue.pendingShifts.set(newMsgId, data);
 
                             // 2. 如果是子消息（即 data.rootId 存在），需要同步更新根消息里的 childIds 指向
-                            if (data.rootId && pendingShifts.has(data.rootId)) {
-                                const rootData = pendingShifts.get(data.rootId);
+                            if (data.rootId && queue.pendingShifts.has(data.rootId)) {
+                                const rootData = queue.pendingShifts.get(data.rootId);
                                 const index = rootData.childIds.indexOf(oldMsgId);
                                 if (index !== -1) {
                                     rootData.childIds[index] = newMsgId; // 把旧 ID 替换为新 ID
@@ -1060,7 +1051,7 @@ export async function apply(ctx: Context, cfg: Config) {
                             // 只有原本是该组最后一个消息时才加 ✅ (这里可以根据业务逻辑判断)
                             // 简单处理：全部重新贴一遍，或者从原 data 记录状态
                             for (const emoji of emojis) {
-                                void addTaskToQueue(getTaskQueueKey(channelId, 'emoji'), () => bot.createReaction(channelId, newMsgId, emoji), `task-${newMsgId}-${emoji}`);
+                                void queue.addTaskToQueue(getTaskQueueKey(channelId, 'emoji'), () => bot.createReaction(channelId, newMsgId, emoji), `task-${newMsgId}-${emoji}`);
                             }
                         }
                     } catch (e) {
@@ -1070,143 +1061,7 @@ export async function apply(ctx: Context, cfg: Config) {
                 }
             }
 
-            // 内存存储：messageId -> { userId, userName, day, slots, shiftId, timestamp }
-            // slots 结构: { start, end, action: 'none' | 'add' | 'del' }
-            const pendingShifts: Map<string, PendingShift> = new Map();
 
-            // 1. 创建限制器组 (Group)
-            const limiterGroup = new Bottleneck.Group({
-                // 这里的配置会应用到该组创建的每一个子限制器上
-                minTime: 350,
-                maxConcurrent: 1,
-                // 队列清理：如果某个频道 5 分钟没动静，自动销毁其限制器以节省内存
-                timeout: 1000 * 60 * 5,
-            });
-
-            // 2. 全局监听组内所有限制器的错误
-            limiterGroup.on('error', (error) => {
-                console.error('[LimiterGroup] 任务执行出错:', error);
-            });
-
-            // 3. 全局监听重试逻辑
-            limiterGroup.on('failed', async (_: Bottleneck, error: Error, jobInfo: Bottleneck.EventInfoRetryable) => {
-                const errorMsg = error.message || 'Unknown Error';
-
-                if (jobInfo.retryCount < 3) {
-                    let retryAfter = 0.3;
-                    // 尝试解析 Discord 的 retry_after
-                    try {
-                        const jsonMatch = errorMsg.match(/\{.*}/);
-                        if (jsonMatch) {
-                            const data = JSON.parse(jsonMatch[0]);
-                            retryAfter = data.retry_after || 0.3;
-                        }
-                    } catch {}
-
-                    const waitMs = Math.ceil(retryAfter * 1000) + jobInfo.retryCount * 200;
-                    console.warn(`[Retry ${jobInfo.retryCount + 1}/3] 任务 ${jobInfo.options.id} 出错，${waitMs}ms 后重试。`);
-
-                    return waitMs;
-                }
-                return null;
-            });
-
-            ctx.on('dispose', async () => {
-                bdShiftLogger.info('[Limiter] 插件正在停用，清理所有频道队列...');
-
-                // 1. 获取当前组内所有的限制器对
-                const pairs = limiterGroup.limiters();
-
-                // 2. 并发停止所有限制器
-                await Promise.all(pairs.map(async ({ key, limiter }) => {
-                    try {
-                        await limiter.stop({
-                            // 物理丢弃：丢弃所有接收、排队和执行中的任务
-                            dropWaitingJobs: true,
-                            // 赋予一个明确的错误信息，方便在日志中区分
-                            dropErrorMessage: `Plugin disposed: channel ${key}`,
-                            enqueueErrorMessage: 'Plugin is no longer active'
-                        });
-                        bdShiftLogger.info(`[Limiter] 已停止频道队列: ${key}`);
-                    } catch (e) {
-                        // 忽略已经停止或销毁的报错
-                    }
-                }));
-
-                // 逻辑拦截：清空版本令牌 Map
-                latestVersionMap.clear();
-
-                bdShiftLogger.info('[Limiter] 所有队列已切断');
-            });
-
-            // 创建版本管理 Map，记录每个 ID 对应的最新请求版本
-            // Key: 任务 ID (例如: CHECK-频道ID-用户名)
-            // Value: 最新的版本号 (时间戳)
-            const latestVersionMap = new Map<string, number>();
-
-            /**
-             * 辅助函数：深度检查错误是否由插件销毁/上下文关闭引起
-             */
-            const isDisposedError = (e: any): boolean => {
-                const msg = e?.message?.toLowerCase() || '';
-                // 检查基础错误消息
-                if (msg.includes('plugin disposed') || msg.includes('context disposed')) return true;
-                // 处理 Satori/Discord 常见的 AggregateError (套娃错误)
-                if (e?.errors && Array.isArray(e.errors)) {
-                    return e.errors.some((subErr: any) => isDisposedError(subErr));
-                }
-                return false;
-            };
-
-            /**
-             * 入队函数
-             * @param queueKey 队列标识（建议传入 getTaskQueueKey），相同 key 的任务会排队
-             * @param task 异步任务
-             * @param id 任务唯一 ID（用于日志和去重）
-             */
-            async function addTaskToQueue(queueKey: string, task: () => Promise<any>, id?: string) {
-                const limiter = limiterGroup.key(queueKey);
-
-                if (id && id.startsWith('CHECK-')) {
-                    const myVersion = Date.now();
-                    latestVersionMap.set(id, myVersion);
-
-                    return limiter.schedule({}, async () => {
-                        // 自检：如果版本不匹配，或插件已停用（Map被清空），直接静默退出
-                        if (!latestVersionMap.has(id) || latestVersionMap.get(id) !== myVersion) {
-                            return [null];
-                        }
-
-                        try {
-                            const result = await task();
-                            return Array.isArray(result) ? result : [result ?? null];
-                        } catch (err) {
-                            if (isDisposedError(err)) return [null];
-                            throw err;
-                        }
-                    });
-                }
-
-                return limiter.schedule({ id }, async () => {
-                    try {
-                        const result = await task();
-                        // 同样确保返回格式始终为数组
-                        return Array.isArray(result) ? result : [result ?? null];
-                    } catch (err) {
-                        // 捕获执行过程中插件被停用的错误 (context disposed)
-                        if (isDisposedError(err)) return [null];
-                        throw err;
-                    }
-                }).catch(err => {
-                    // 捕获排队过程中被 Bottleneck 物理丢弃的错误 (Plugin disposed)
-                    if (isDisposedError(err)) {
-                        return [null];
-                    }
-                    // 真正的业务异常（非卸载导致）才打印日志
-                    console.error(`[Limiter] 任务 ${id || 'unknown'} 执行失败:`, err);
-                    throw err;
-                });
-            }
 
 
 
@@ -1258,19 +1113,19 @@ export async function apply(ctx: Context, cfg: Config) {
                     // 用于收集当前这一组发出的子消息 ID
                     // const currentGroupIds: string[] = [];
                     // 遍历内存中所有还在等待的消息，移除它们的提交勾，防止多处提交导致冲突
-                    for (const [oldMsgId, oldData] of pendingShifts.entries()) {
+                    for (const [oldMsgId, oldData] of queue.pendingShifts.entries()) {
                         if (oldData.shiftId === curr.shift_id && oldData.last) {
                             for (let targetChannel of shiftTable.manager_channels) {
                                 const cleanId = targetChannel.includes(':') ? targetChannel.split(':').pop() : targetChannel;
                                 // 使用 reactionQueue 异步处理，避免阻塞主流程
-                                void addTaskToQueue(getTaskQueueKey(cleanId, 'emoji'), async () => {
+                                void queue.addTaskToQueue(getTaskQueueKey(cleanId, 'emoji'), async () => {
                                     // 执行前检查：如果已经被别人改过了，直接退出
-                                    const currentData = pendingShifts.get(oldMsgId);
+                                    const currentData = queue.pendingShifts.get(oldMsgId);
                                     if (!currentData || !currentData.last) return;
                                     await session.bot.deleteReaction(cleanId, oldMsgId, '✅');
-                                    const freshData = pendingShifts.get(oldMsgId);
+                                    const freshData = queue.pendingShifts.get(oldMsgId);
                                     if (freshData) {
-                                        pendingShifts.set(oldMsgId, { ...freshData, last: false });
+                                        queue.pendingShifts.set(oldMsgId, { ...freshData, last: false });
                                     }
                                 }, `delete-check-${oldMsgId}`);
                             }
@@ -1279,9 +1134,9 @@ export async function apply(ctx: Context, cfg: Config) {
                     await Promise.all(shiftTable.manager_channels.map(async (targetChannel) => {
                         try {
                             const cleanId = targetChannel.includes(':') ? targetChannel.split(':').pop() : targetChannel;
-                            latestVersionMap.set(`CHECK-${getTaskQueueKey(cleanId, 'emoji')}`, -1);
+                            queue.latestVersionMap.set(`CHECK-${getTaskQueueKey(cleanId, 'emoji')}`, -1);
                             // 1. 发送根引用消息
-                            const [rootId] = await addTaskToQueue(
+                            const [rootId] = await queue.addTaskToQueue(
                                 getTaskQueueKey(cleanId, 'message'),
                                 () => session.bot.sendMessage(cleanId, quoteContent),
                                 `root-${ cleanId }-${ session.messageId }`
@@ -1293,7 +1148,7 @@ export async function apply(ctx: Context, cfg: Config) {
                             if (!rootId) return;
 
                             // 初始化根消息数据
-                            pendingShifts.set(rootId, {
+                            queue.pendingShifts.set(rootId, {
                                 userName,
                                 dayIndex: dayIndex,
                                 shiftId: curr.shift_id,
@@ -1316,7 +1171,7 @@ export async function apply(ctx: Context, cfg: Config) {
                                     end
                                 });
 
-                                void addTaskToQueue(
+                                void queue.addTaskToQueue(
                                     getTaskQueueKey(cleanId, 'message'),
                                     () => session.bot.sendMessage(cleanId, confirmContent),
                                     `child-${cleanId}-${i}-${Date.now()}`
@@ -1325,7 +1180,7 @@ export async function apply(ctx: Context, cfg: Config) {
                                     if (!sentMsgId) return;
 
                                     // 存入内存
-                                    pendingShifts.set(sentMsgId, {
+                                    queue.pendingShifts.set(sentMsgId, {
                                         userName,
                                         dayIndex: dayIndex,
                                         slot: { start, end, action: 'none' },
@@ -1341,14 +1196,14 @@ export async function apply(ctx: Context, cfg: Config) {
                                     const emojis = ['👍', '👎', '🙌'];
                                     // if (isLast) emojis.push('✅');
                                     for (const emoji of emojis) {
-                                        void addTaskToQueue(
+                                        void queue.addTaskToQueue(
                                             getTaskQueueKey(cleanId, 'emoji'),
                                             () => session.bot.createReaction(cleanId, sentMsgId, emoji),
                                             `task-${sentMsgId}-${emoji}`
                                         );
                                     }
                                     if (isLast) {
-                                        void addTaskToQueue(
+                                        void queue.addTaskToQueue(
                                             getTaskQueueKey(cleanId, 'emoji'),
                                             () => session.bot.createReaction(cleanId, sentMsgId, '✅'),
                                             `CHECK-${getTaskQueueKey(cleanId, 'emoji')}`
@@ -1358,9 +1213,9 @@ export async function apply(ctx: Context, cfg: Config) {
                             }
 
                             // 3. 将子消息 ID 关联到根消息
-                            const rootData = pendingShifts.get(rootId);
+                            const rootData = queue.pendingShifts.get(rootId);
                             rootData.childIds = childIdsForThisRoot;
-                            pendingShifts.set(rootId, rootData);
+                            queue.pendingShifts.set(rootId, rootData);
                         } catch (err) {
                             bdShiftLogger.error(`[Shift] 频道处理异常:`, err);
                         }
@@ -1382,7 +1237,7 @@ export async function apply(ctx: Context, cfg: Config) {
             // 处理表情标记与最终提交
             ctx.on('reaction-added', async (session) => {
                 if (session.userId === session.selfId) return;
-                const currentPending = pendingShifts.get(session.messageId);
+                const currentPending = queue.pendingShifts.get(session.messageId);
                 if (!currentPending || !currentPending.slot) return;
 
                 const cleanId= session.channelId;
@@ -1408,7 +1263,7 @@ export async function apply(ctx: Context, cfg: Config) {
                     let hasUnprocessed = false;
 
                     // 第一遍扫描：合法性检查
-                    for (const [msgId, data] of pendingShifts.entries()) {
+                    for (const [msgId, data] of queue.pendingShifts.entries()) {
                         // 只检查同一个班表项目下的任务
                         if (data.shiftId === currentPending.shiftId) {
                             if (!data.slot) continue;
@@ -1457,13 +1312,13 @@ export async function apply(ctx: Context, cfg: Config) {
                     }
 
                     // 统一清理内存并记录 skip 项
-                    for (const [msgId, data] of pendingShifts.entries()) {
+                    for (const [msgId, data] of queue.pendingShifts.entries()) {
                         if (data.shiftId === currentPending.shiftId) {
                             if (data.slot && data.slot.action === 'skip') {
                                 results.push(`- [${session.text('auto-shift.skip')}] ${data.userName} ${data.dayIndex + 1}日目 ${data.slot.start}-${data.slot.end}`);
                             }
                             // 根消息和子消息都要从内存移除
-                            pendingShifts.delete(msgId);
+                            queue.pendingShifts.delete(msgId);
                         }
                     }
 
@@ -1494,13 +1349,13 @@ export async function apply(ctx: Context, cfg: Config) {
                 // 确定服务器
                 let mainServer = cfg.defaultServer;
                 if (server) {
-                    const fuzzy = await utils.serverNameFuzzySearchResult(ctx, cfg, server);
+                    const fuzzy = await serverNameFuzzySearchResult(ctx, cfg, server);
                     if (fuzzy === -1) return session.text('noMatchServer');
                     mainServer = fuzzy;
                 }
 
                 // 获取当前活动信息
-                const events = await utils.readJson(ctx, `${BestdoriAPI}/events/all.5.json`);
+                const events = await readJson(ctx, `${BestdoriAPI}/events/all.5.json`);
                 const now = Date.now();
                 const eventEntry = Object.entries(events).reverse().find(([_, v]) => {
                     const start = +v?.['startAt']?.[mainServer], end = +v?.['endAt']?.[mainServer];
@@ -1561,8 +1416,8 @@ export async function apply(ctx: Context, cfg: Config) {
                 }
                 // 获取数据并推送
                 try {
-                    const list = await utils.commandTopRateRanking(cfg, tracker.mainServer, 60, undefined, tracker.trackerPlayer);
-                    await ctx.broadcast([group_gid], utils.paresMessageList(list));
+                    const list = await commandTopRateRanking(cfg, tracker.mainServer, 60, undefined, tracker.trackerPlayer);
+                    await ctx.broadcast([group_gid], paresMessageList(list));
                 } catch (e) {
                     ctx.logger('speed-tracker').error(e);
                 }
@@ -1642,171 +1497,13 @@ export async function apply(ctx: Context, cfg: Config) {
             logger.info('未发现需要修复的旧版数据。');
         }
     }
-}
-/**
- * 找到当前群正在使用的班表记录
- */
-async function getCurrentShift(ctx: Context, gid: string) {
-    const [record] = await ctx.database.get('bangdream_shift_group', {
-        gid,
-        using: true
-    });
-    return record || null;
-}
 
-/**
- * 根据 shift_id 加载并实例化 ShiftTable
- * @param ctx
- * @param shift_id
- * @param gAuth 运行时传入的 Google 服务账号密钥（不存储于数据库）
- */
-async function loadShift(ctx: Context, shift_id: number, gAuth?: GoogleSheetAuth): Promise<bangdream_shift | null> {
-    const [data] = await ctx.database.get('bangdream_shift', { id: shift_id });
-    if (!data) return null;
 
-    // 使用静态工厂方法还原实例
-    // data.shiftTable 是数据库存的 JSON，gAuth 是内存中的实时密钥
-    if (data.shiftTable) {
-        data.shiftTable = ShiftTable.fromJSON(data.shiftTable as any, gAuth);
+    async function autoLoadShift(session: Session) {
+        const curr = await getCurrentShift(ctx, getGid(session));
+        if (!curr) return;
+        const row = await loadShift(ctx, curr.shift_id, cfg.googleAuth);
+        if (!row) return;
+        return row;
     }
-
-    return data;
-}
-
-/**
- * 保存 ShiftTable 实例
- */
-async function saveShift(ctx: Context, row: bangdream_shift) {
-    /**
-     * 注意：
-     * 1. 因为 ShiftTable 实现了 toJSON()，Koishi 在序列化时会自动调用它。
-     * 2. toJSON 内部不包含 gAuth，所以数据库里只会存下布局配置（ID/单元格等）和排班数据。
-     */
-    await ctx.database.set('bangdream_shift', { id: row.id }, {
-        name: row.name,
-        shiftTable: row.shiftTable // 这里会触发 row.shiftTable.toJSON()
-    });
-}
-/**
- * 检查该群是否是该班表的 owner
- */
-async function isShiftOwner(ctx: Context, gid: string, shift_id: number) {
-    const record = await ctx.database.get('bangdream_shift_group', {
-        gid,
-        shift_id
-    })
-    return record[0]?.is_owner ?? false
-}
-
-/**
- * 检查用户权限
- */
-async function canGrant(session: Session) {
-    // 单人作用域直接放行
-    if (!session.guildId) return true;
-
-    // 本地权限
-    // 使用 Set 提高查找效率
-    const rolesSet = new Set<string>([
-        ...(session.event.member?.roles || []).map(r => {
-            if (typeof r === 'string') return r;
-            return r.id;
-        })
-    ]);
-
-    const user = await session.observeUser(['authority']);
-    if (user.authority > 1 || rolesSet.has('admin') || rolesSet.has('owner')) {
-        return true;
-    }
-
-    // Discord 权限
-    if (session.discord) {
-        try {
-            // 获取服务器信息并校验 Owner
-            const guild = await session.discord.getGuild(session.guildId);
-            if (session.userId === guild.owner_id) return true;
-
-            // 权限位掩码 (使用 BigInt 确保 32 位以上也安全)
-            // 1n << 3n 是 ADMINISTRATOR, 1n << 5n 是 MANAGE_GUILD
-            const MANAGER_MASK = (1n << 3n) | (1n << 5n);
-
-            // 获取服务器所有角色，筛选出具有管理权限的角色 ID 列表
-            const dcManagerRoles = (await session.discord.getGuildRoles(session.guildId))
-                .filter((r) => (BigInt(r.permissions) & MANAGER_MASK) !== 0n)
-                .map(r => r.id);
-
-            // 获取当前成员的角色列表
-            const member = await session.discord.getGuildMember(session.guildId, session.userId);
-            const userRoles = member.roles || [];
-
-            // 检查用户角色是否包含在管理角色列表中
-            if (userRoles.some((ur: string) => dcManagerRoles.includes(ur))) {
-                return true;
-            }
-        } catch (e) {
-            console.error("[Permission Check Error]:", e);
-        }
-    }
-
-    return false;
-}
-
-function getGid(session: Session) {
-    return session.guild || session.event.guild ? session.gid ?? `${session.event.platform}:${session.event.guild.id}` : session.uid
-}
-
-function getTaskQueueKey(channelId: string, type: string) {
-    return `${channelId}-${type}`
-}
-
-
-/**
- * 解析 Discord 频道 ID (匹配字符串中最后一个 17-20 位的数字串)
- * 支持:
- * - Mention: <#1234567890123456789>
- * - URL: https://discord.com/channels/.../1234567890123456789
- * - Raw ID: 1234567890123456789
- * - Koishi Element: <sharp id="1234567890123456789"/>
- */
-function parseChannelId(input: string): string | null {
-    if (!input) return null;
-
-    // 使用全局匹配获取所有符合 ID 特征的数字串
-    const matches = input.match(/\d{17,20}/g);
-
-    // 如果有匹配项，取最后一个
-    return matches ? matches[matches.length - 1] : null;
-}
-
-
-function roundToNearestHour(str: string): string {
-    if (!/^\d{10,14}$/.test(str) || str.length % 2 !== 0) throw new ShiftError("INVALID_TIME_FORMAT", 'Invalid Time Format');
-
-    // 每 2 或 4 位切割一次：2025 | 12 | 10 | 15 ...
-    const [Y, M, D, H, m, s] = (str.match(/(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})?(\d{2})?/) || [])
-        .slice(1).map(v => +v || 0);
-    // 逻辑：如果>=半小时，则小时 +1
-    const d = new Date(Y, M - 1, D, H + Math.round(m / 60 + s / 3600));
-    //格式化
-    const f = (n: number) => String(n).padStart(2, '0');
-    return `${d.getFullYear()}${f(d.getMonth() + 1)}${f(d.getDate())}${f(d.getHours())}`;
-}
-
-function hoursToRanges(hours: number[]): string[] {
-    if (!hours.length) return [];
-
-    // 先排序，确保逻辑正确
-    const sorted = [...hours].sort((a, b) => a - b);
-    const ranges: string[] = [];
-    let start = sorted[0];
-
-    sorted.forEach((h, i) => {
-        // 如果当前小时不是下一位的连续值，或者是最后一个元素
-        if (sorted[i + 1] !== h + 1) {
-            ranges.push(`${start}-${h + 1}`);
-            start = sorted[i + 1];
-        }
-    });
-
-    return ranges;
 }
