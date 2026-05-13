@@ -99,6 +99,15 @@ commands:
             invalidColor: '色は次のいずれかである必要があります: {validColors}'
             success: '色を設定しました:<br/> {day}日目 {hourRange} {color}'
             fail: 'この時間帯は利用できません'
+    shift-change-notice:
+        description: '毎時のシフト交代通知チャンネルを設定'
+        messages:
+            enabled: 'シフト交代通知を有効化しました。通知先: {channel}'
+            disabled: 'シフト交代通知を無効化しました（以前の通知先: {channel}）'
+            notInChannel: 'チャンネル指定が無効です。ID / メンション / URL を確認してください'
+            notice: "もうすぐ{hour}時です\n出：{offDuty}さん\n入：{onDuty}さん\n入る方は事前に部屋番号を入力して待機をお願いします"
+            name-connect-symbol: 'さん、'
+            none: 'なし'
     interval-speed-on:
         description: '車速定時プッシュを有効化'
         messages:

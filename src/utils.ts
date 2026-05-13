@@ -1,4 +1,4 @@
-import { Context, Element, h, Session } from 'koishi'
+import { Context, Element, h, Logger, Session } from 'koishi'
 import { bangdream_shift, Config, Server } from "./index";
 import axios, { AxiosResponse } from "axios";
 import { ShiftError, ShiftTable } from "./shift";
@@ -310,6 +310,120 @@ export function hoursToRanges(hours: number[]): string[] {
     });
 
     return ranges;
+}
+
+export interface ShiftNoticeTarget {
+    dayIndex: number;
+    hour: number;
+}
+
+/**
+ * 计算“下一个整点”的班表槽位（按班表时区计算）。
+ * 若不在活动时间内或槽位越界，则返回 null。
+ */
+export function resolveShiftNoticeTarget(shiftTable: ShiftTable, now: number): ShiftNoticeTarget | null {
+    const toPseudoUtcByTimezone = (ts: number, timezone: string): number => {
+        const parts = new Intl.DateTimeFormat('en-US', {
+            timeZone: timezone,
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            hour12: false,
+        }).formatToParts(new Date(ts));
+
+        const part = (type: Intl.DateTimeFormatPartTypes) => Number(parts.find(p => p.type === type)?.value ?? 0);
+        const year = part('year');
+        const month = part('month');
+        const day = part('day');
+        const hour = part('hour');
+        const minute = part('minute');
+        const second = part('second');
+        return Date.UTC(year, month - 1, day, hour, minute, second);
+    };
+
+    const startUTC = Date.UTC(shiftTable.startYear, shiftTable.startMonth - 1, shiftTable.startDay, shiftTable.startHour);
+    const endUTC = Date.UTC(shiftTable.endYear, shiftTable.endMonth - 1, shiftTable.endDay, shiftTable.endHour);
+    const nowPseudoUTC = toPseudoUtcByTimezone(now, shiftTable.timezone || 'Asia/Tokyo');
+    const hoursElapsed = Math.floor((nowPseudoUTC - startUTC) / 3600000);
+    const targetIndex = hoursElapsed + 1;
+    const targetAtUTC = startUTC + targetIndex * 3600000;
+
+    // 目标整点必须落在活动区间 [start, end)
+    if (targetAtUTC < startUTC || targetAtUTC >= endUTC) return null;
+
+    // targetIndex 是相对活动起始小时的偏移，需要叠加 startHour
+    const absoluteHourIndex = shiftTable.startHour + targetIndex;
+    const dayIndex = Math.floor(absoluteHourIndex / 24);
+    const hour = ((absoluteHourIndex % 24) + 24) % 24;
+
+    if (dayIndex < 0 || dayIndex >= shiftTable.days) return null;
+
+    return { dayIndex, hour };
+}
+
+/** 目标小时为黑/灰/invalid 时跳过通知。 */
+export function isShiftNoticeHourBlocked(shiftTable: ShiftTable, dayIndex: number, hour: number): boolean {
+    const block = shiftTable.getHourBlock(dayIndex, hour);
+    return !block || ['black', 'gray', 'invalid'].includes(block.hourColor);
+}
+
+/**
+ * 执行一轮换班通知任务。
+ * - 按班表时区计算目标小时
+ * - 活动时间外、黑灰无效小时均跳过
+ */
+export async function executeShiftChangeNoticeTask(ctx: Context, cfg: Config, logger?: Logger): Promise<void> {
+    const records = await ctx.database.get('bangdream_shift', {});
+    const now = Date.now();
+
+    for (const rec of records) {
+        try {
+            const loaded = await loadShift(ctx, rec.id, cfg.googleAuth);
+            if (!loaded) continue;
+
+            const st = loaded.shiftTable;
+            const notice = st.getChangeNotice();
+            if (!notice || !notice.enabled || !notice.channel) continue;
+            const locale = notice.locale || 'ja-JP';
+
+            const target = resolveShiftNoticeTarget(st, now);
+            if (!target) continue;
+            const { dayIndex, hour } = target;
+            if (isShiftNoticeHourBlocked(st, dayIndex, hour)) continue;
+
+            st.generateShiftExchange();
+            const exchange = st.getShiftExchange(dayIndex)?.[hour];
+            if (!exchange) continue;
+
+            const fragmentToText = (fragment: h[]): string => {
+                return fragment.map((node: any) => {
+                    if (typeof node === 'string') return node;
+                    if (node?.type === 'text') return node?.attrs?.content ?? '';
+                    return node?.toString?.() ?? '';
+                }).join('');
+            };
+            const noneRendered = ctx.i18n.render([locale], ['commands.shift-change-notice.messages.none'], {});
+            const noneText = fragmentToText(noneRendered);
+            const nameConnectSymbol = ctx.i18n.render([locale], ['commands.shift-change-notice.messages.name-connect-symbol'], {});
+            const onDuty = exchange.onDuty?.length ? exchange.onDuty.join(fragmentToText(nameConnectSymbol)) : noneText;
+            const offDuty = exchange.offDuty?.length ? exchange.offDuty.join(fragmentToText(nameConnectSymbol)) : noneText;
+            const rendered = ctx.i18n.render([locale], ['commands.shift-change-notice.messages.notice'], {
+                hour,
+                offDuty,
+                onDuty,
+            });
+            try {
+                await ctx.broadcast([notice.channel], rendered);
+            } catch (e) {
+                logger?.error('[ShiftNotice] 推送失败', notice.channel, e);
+            }
+        } catch (e) {
+            logger?.error('[ShiftNotice] 单条处理失败', e);
+        }
+    }
 }
 
 

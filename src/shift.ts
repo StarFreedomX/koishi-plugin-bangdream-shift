@@ -130,6 +130,8 @@ export class ShiftTable {
     private _shift_channels: {
         [channelId:string]: number;
     } = {}
+    // 换班通知配置（存频道、启用开关和语言）
+    private _change_notice?: { channel?: string, enabled?: boolean, locale?: string };
     private _eventStartTime: string;
     private _eventEndTime: string;
     private _days: number; // 总天数
@@ -185,7 +187,8 @@ export class ShiftTable {
         member_table: memberTable,
         shiftExchange: ShiftExchange[][],
         manager_channels?: string[],
-        shift_channels?: { [channelId:string]: number; }
+        shift_channels?: { [channelId:string]: number; },
+        change_notice?: { channel?: string; enabled?: boolean; locale?: string }
     }, gAuth?: GoogleSheetAuth): ShiftTable {
         // 调用构造函数，触发 Handler 的初始化
         const instance = new ShiftTable(
@@ -201,6 +204,12 @@ export class ShiftTable {
         instance.shiftExchange = data.shiftExchange || [];
         instance._manager_channels = data.manager_channels || [];
         instance._shift_channels = data.shift_channels || {};
+        // 允许从持久化数据中恢复换班通知配置
+        if (data.change_notice) {
+            // 兼容旧版字段，但这里直接读取已声明的属性
+            const cn = data.change_notice;
+            instance._change_notice = { channel: cn.channel, enabled: cn.enabled, locale: cn.locale };
+        }
 
         return instance;
     }
@@ -216,7 +225,21 @@ export class ShiftTable {
             shiftExchange: this.shiftExchange,
             manager_channels: this._manager_channels,
             shift_channels: this._shift_channels,
+            change_notice: this._change_notice,
         };
+    }
+
+    /** 换班通知相关接口，存储在 ShiftTable 实例内并会被序列化到数据库 */
+    setChangeNotice(channel: string, locale = 'zh-CN') {
+        this._change_notice = { channel, enabled: true, locale };
+    }
+
+    deleteChangeNotice() {
+        this._change_notice = undefined;
+    }
+
+    getChangeNotice(): { channel?: string, enabled?: boolean, locale?: string } | undefined {
+        return this._change_notice;
     }
 
     private markInvalidHours() {
@@ -847,6 +870,7 @@ export interface ShiftTableSchema {
     shiftExchange: ShiftExchange[][],
     manager_channels?: string[],
     shift_channels?: { [channelId:string]: number; }
+    change_notice?: { channel?: string; enabled?: boolean; locale?: string }
 }
 
 // 历史版本的特征字段（用于识别旧数据）

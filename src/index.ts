@@ -11,7 +11,7 @@ import { paresMessageList, getGid, canGrant, isShiftOwner,
     getTaskQueueKey, hoursToRanges, getDataFromBackend,
     getReplyFromBackend, parseChannelId, readJson,
     commandTopRateRanking, getFuzzySearchResult,
-    serverNameFuzzySearchResult
+    serverNameFuzzySearchResult, executeShiftChangeNoticeTask
 } from './utils'
 
 export const name = 'bangdream-shift'
@@ -818,6 +818,64 @@ export async function apply(ctx: Context, cfg: Config) {
                 const hourRange = hoursToRanges(hours)
                 return session.text('.success', { day, hourRange, color })
             });
+
+        ctx.command('shift-change-notice <enable:boolean> [channelId:string]')
+            .action(async ({ session }, enable, channelId) => {
+                bdShiftLogger.info(session.userId, 'try to set shift change notice: ', enable, channelId);
+                if (!await canGrant(session)) return session.text('permission-denied');
+
+                let finalCid: string;
+                if (channelId) {
+                    const parsed = parseChannelId(channelId);
+                    if (!parsed) return session.text('.notInChannel');
+                    finalCid = `${session.platform}:${parsed}`;
+                } else {
+                    finalCid = session.cid;
+                }
+
+                const row = await autoLoadShift(session);
+                if (!row) return session.text('noGroups');
+
+                const { shiftTable } = row;
+                if (enable) {
+                    const noticeLocale = (session as any).locales?.[0] || (session as any).locale || 'ja-JP';
+                    shiftTable.setChangeNotice(finalCid, noticeLocale);
+                    await saveShift(ctx, row);
+                    return session.text('.enabled', { channel: finalCid });
+                } else {
+                    shiftTable.deleteChangeNotice();
+                    await saveShift(ctx, row);
+                    return session.text('.disabled', { channel: finalCid });
+                }
+            });
+
+        // 换班通知调度：每小时检查一次，提前 MINUTES_BEFORE 分钟触发（MINUTES_BEFORE 写死在程序中）
+        const MINUTES_BEFORE = 5;
+
+        const alignToHourlyNotice = () => {
+            const now = Date.now();
+            // 计算距离下一个整点再减去提前分钟数的毫秒数
+            let delay = 3600000 - (now % 3600000) - MINUTES_BEFORE * 60000;
+            if (delay <= 0) delay += 3600000; // 保证为正
+
+            ctx.setTimeout(async () => {
+                try {
+                    await executeShiftChangeNoticeTask(ctx, cfg, bdShiftLogger);
+                } catch (e) {
+                    bdShiftLogger.error('[ShiftNotice] 执行异常', e);
+                }
+                // 每小时触发一次
+                ctx.setInterval(async () => {
+                    try {
+                        await executeShiftChangeNoticeTask(ctx, cfg, bdShiftLogger);
+                    } catch (e) {
+                        bdShiftLogger.error('[ShiftNotice] 定时任务异常', e);
+                    }
+                }, 3600000);
+            }, delay);
+        };
+
+        alignToHourlyNotice();
 
         if (cfg.autoRecognize) {
 

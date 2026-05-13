@@ -99,6 +99,15 @@ commands:
             invalidColor: '顏色必須是以下其中之一: {validColors}'
             success: '已設定顏色<br/> 第{day}天 {hourRange} {color}'
             fail: '該時段不可用'
+    shift-change-notice:
+        description: '設定整點換班通知頻道'
+        messages:
+            enabled: '已開啟換班通知，推播頻道：{channel}'
+            disabled: '已關閉換班通知（原頻道：{channel}）'
+            notInChannel: '頻道參數無效，請輸入正確的頻道 ID / mention / 連結'
+            notice: "即將到達{hour}時\n下車：{offDuty}\n上車：{onDuty}\n請上車的人員提前輸入房間號做好準備"
+            name-connect-symbol: '、'
+            none: '無'
     interval-speed-on:
         description: '開啟車速定時推播'
         messages:
