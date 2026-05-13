@@ -752,9 +752,9 @@ export class ShiftTable {
             const isBlackOrGray = ["black", "gray"].includes(b.hourColor),
                 rowBg = b.hourColor === "black" ? SHIFT_COLORS.BLACK : SHIFT_COLORS.GRAY;
             const [nb, pb] = [this.shift_table[dayIndex][h + 1], this.shift_table[dayIndex][h - 1]];
-            const nextIsBlackOrGray = nb?.hourColor === "black" || nb?.hourColor === "gray";
-            const nP = (h === 23 || nextIsBlackOrGray) ? [] : nb?.persons?.filter(Boolean) || [],
-                pP = (h === 0) ? [] : pb?.persons?.filter(Boolean) || [];
+            const [nextIsBlackOrGray, prevIsBlackOrGray] = [nb, pb].map(b=>b?.hourColor === "black" || b?.hourColor === "gray");
+            const nP = (h === 23 || nextIsBlackOrGray) ? [] : nb?.persons?.filter(Boolean) || [];
+            const pP = (h === 0 || prevIsBlackOrGray) ? [] : pb?.persons?.filter(Boolean) || [];
 
             // 样式辅助：处理隐藏行的边框连贯性
             const hiddenStyle = (i: number) => isBlackOrGray
