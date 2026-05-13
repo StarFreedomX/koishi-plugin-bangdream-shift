@@ -1155,7 +1155,8 @@ export async function apply(ctx: Context, cfg: Config) {
                     shiftTable.shift_channels[`${session.platform}:${session.channelId}`];
                 if (dayIndex === undefined) return next();
 
-                const nickname = session?.event?.user?.nick || session.username || session.userId;
+                const guildMember = await session.bot.getGuildMember(session.guildId, session.userId);
+                const nickname = guildMember.nick || session?.event?.member?.nick || guildMember.user.nick || session?.event?.user?.nick || session.username || guildMember.user.name || session.userId;
                 const timeRegex = new RegExp(cfg.autoRecognizeRegex, 'g');
                 const matches = [...session.content.matchAll(timeRegex)];
 
@@ -1500,8 +1501,8 @@ export async function apply(ctx: Context, cfg: Config) {
         if (cfg.test.test1) {
             ctx.command('test [param1:text]')
                 .alias('test')
-                .action(async ({  }, param1) => {
-                    console.log(param1)
+                .action(async ({ session }, param1) => {
+                    console.log(await session.bot.getGuildMember(session.guildId, session.userId));
                     // await session.send('测试成功');
                 });
         }
@@ -1509,7 +1510,7 @@ export async function apply(ctx: Context, cfg: Config) {
         if (cfg.test.test2) {
             ctx.command('test2 [param1:text]')
                 .alias('test2')
-                .action(async ({ }, param1) => {
+                .action(async ({ session }, param1) => {
                     console.log(param1)
                     // await session.send('测试成功2');
                 });
