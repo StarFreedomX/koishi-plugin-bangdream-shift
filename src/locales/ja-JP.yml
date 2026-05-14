@@ -99,6 +99,20 @@ commands:
             invalidColor: '色は次のいずれかである必要があります: {validColors}'
             success: '色を設定しました:<br/> {day}日目 {hourRange} {color}'
             fail: 'この時間帯は利用できません'
+    set-shift-alias:
+        description: 'シフトの別名を設定'
+        messages:
+            success: 'シフト別名を設定しました: {name} ({id}) -> {nickname}'
+            removed: 'シフト別名を削除しました: {name} ({id})'
+            notFound: '一致するユーザーが見つかりません'
+            multiMatch: '一致するユーザーが複数見つかりました。より具体的に指定してください:\n{matches}'
+            notInGuild: 'ユーザー指定はグループ/サーバー内のみ対応しています'
+    ls-shift-alias:
+        description: 'シフトユーザー別名一覧'
+        messages:
+            title: 'シフトユーザー別名一覧:'
+            item: '- {id} | {name} | {nickname}'
+            none: '(なし)'
     shift-change-notice:
         description: '毎時のシフト交代通知チャンネルを設定'
         messages:

@@ -99,6 +99,20 @@ commands:
             invalidColor: '顏色必須是以下其中之一: {validColors}'
             success: '已設定顏色<br/> 第{day}天 {hourRange} {color}'
             fail: '該時段不可用'
+    set-shift-alias:
+        description: '設定排班表別名'
+        messages:
+            success: '已設定排班表別名: {name} ({id}) -> {nickname}'
+            removed: '已刪除排班表別名: {name} ({id})'
+            notFound: '未找到符合的使用者'
+            multiMatch: '找到多個符合的使用者，請更精確指定:\n{matches}'
+            notInGuild: '僅支援在群組/伺服器內指定使用者'
+    ls-shift-alias:
+        description: '列出排班表用戶別名'
+        messages:
+            title: '排班表用戶別名列表:'
+            item: '- {id} | {name} | {nickname}'
+            none: '(無)'
     shift-change-notice:
         description: '設定整點換班通知頻道'
         messages:

@@ -143,6 +143,67 @@ export async function readJson(ctx: Context, url: string, retryTimes = 3) {
     return undefined;
 }
 
+export interface GuildMemberLite {
+    id: string;
+    name: string;
+    nick?: string;
+}
+
+export function parseUserId(input: string): string | null {
+    if (!input) return null;
+    const matches = input.match(/\d{17,20}/g);
+    return matches ? matches[matches.length - 1] : null;
+}
+
+export function getMemberDisplayName(member: any): string {
+    return member?.nick
+        || member?.user?.nick
+        || member?.user?.name
+        || member?.user?.username
+        || member?.user?.id
+        || member?.user?.userId
+        || member?.id
+        || '';
+}
+
+export async function resolveGuildMemberByInput(session: Session, input: string): Promise<{ member?: GuildMemberLite, matches?: GuildMemberLite[] }> {
+    if (!session.guildId || !input) return {};
+
+    const toLite = (member: any): GuildMemberLite => ({
+        id: member?.user?.id || member?.user?.userId || member?.id,
+        name: member?.user?.name || member?.user?.username || member?.user?.nick || member?.nick || member?.user?.id || member?.id,
+        nick: member?.nick || undefined,
+    });
+
+    const candidateId = parseUserId(input) || input.trim();
+    if (candidateId) {
+        const byId = await session.bot.getGuildMember(session.guildId, candidateId).catch(() => null);
+        if (byId?.user?.id || byId?.id) {
+            return { member: toLite(byId) };
+        }
+    }
+
+    const list = await session.bot.getGuildMemberList(session.guildId).catch(() => null);
+    const data = list?.data || [];
+    if (!data.length) return {};
+
+    const normalized = input.trim().toLowerCase();
+    const matches = data.filter((m: any) => {
+        const fields = [
+            m?.user?.id,
+            m?.user?.userId,
+            m?.user?.name,
+            m?.user?.username,
+            m?.user?.nick,
+            m?.nick,
+        ].filter(Boolean).map((v: string) => v.toLowerCase());
+        return fields.includes(normalized);
+    }).map(toLite);
+
+    if (matches.length === 1) return { member: matches[0] };
+    if (matches.length > 1) return { matches };
+    return {};
+}
 
 /**
  * 找到当前群正在使用的班表记录
@@ -430,5 +491,3 @@ export async function executeShiftChangeNoticeTask(ctx: Context, cfg: Config, lo
         }
     }
 }
-
-

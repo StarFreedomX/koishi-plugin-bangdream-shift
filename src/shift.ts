@@ -60,6 +60,11 @@ interface memberTable {
     [name: string]: Ranking;
 }
 
+interface ShiftAliasRecord {
+    name: string;
+    nickname: string;
+}
+
 const coverRunnerColor = false;
 
 interface ShiftExchange {
@@ -130,6 +135,7 @@ export class ShiftTable {
     private _shift_channels: {
         [channelId:string]: number;
     } = {}
+    private _shift_aliases: Record<string, ShiftAliasRecord> = {};
     // 换班通知配置（存频道、启用开关和语言）
     private _change_notice?: { channel?: string, enabled?: boolean, locale?: string };
     private _eventStartTime: string;
@@ -188,6 +194,7 @@ export class ShiftTable {
         shiftExchange: ShiftExchange[][],
         manager_channels?: string[],
         shift_channels?: { [channelId:string]: number; },
+        shift_aliases?: Record<string, ShiftAliasRecord>,
         change_notice?: { channel?: string; enabled?: boolean; locale?: string }
     }, gAuth?: GoogleSheetAuth): ShiftTable {
         // 调用构造函数，触发 Handler 的初始化
@@ -204,6 +211,7 @@ export class ShiftTable {
         instance.shiftExchange = data.shiftExchange || [];
         instance._manager_channels = data.manager_channels || [];
         instance._shift_channels = data.shift_channels || {};
+        instance._shift_aliases = data.shift_aliases || {};
         // 允许从持久化数据中恢复换班通知配置
         if (data.change_notice) {
             // 兼容旧版字段，但这里直接读取已声明的属性
@@ -225,8 +233,31 @@ export class ShiftTable {
             shiftExchange: this.shiftExchange,
             manager_channels: this._manager_channels,
             shift_channels: this._shift_channels,
+            shift_aliases: this._shift_aliases,
             change_notice: this._change_notice,
         };
+    }
+
+    setShiftAlias(userId: string, name: string, nickname: string): void {
+        if (!userId || !nickname) return;
+        this._shift_aliases[userId] = { name, nickname };
+    }
+
+    removeShiftAlias(userId: string): void {
+        if (!userId) return;
+        delete this._shift_aliases[userId];
+    }
+
+    getShiftAlias(userId: string): ShiftAliasRecord | undefined {
+        return this._shift_aliases[userId];
+    }
+
+    listShiftAliases(): Array<{ id: string, name: string, nickname: string }> {
+        return Object.entries(this._shift_aliases).map(([id, record]) => ({
+            id,
+            name: record.name,
+            nickname: record.nickname
+        }));
     }
 
     /** 换班通知相关接口，存储在 ShiftTable 实例内并会被序列化到数据库 */
@@ -869,7 +900,8 @@ export interface ShiftTableSchema {
     member_table: memberTable,
     shiftExchange: ShiftExchange[][],
     manager_channels?: string[],
-    shift_channels?: { [channelId:string]: number; }
+    shift_channels?: { [channelId:string]: number; },
+    shift_aliases?: Record<string, ShiftAliasRecord>,
     change_notice?: { channel?: string; enabled?: boolean; locale?: string }
 }
 

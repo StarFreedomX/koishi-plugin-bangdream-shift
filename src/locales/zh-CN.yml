@@ -67,6 +67,20 @@ commands:
         messages:
             success: '已将班表管理频道设置为 {channel}'
             remove: '已移除管理频道: {channel}'
+    set-shift-alias:
+        description: '设置班表别名'
+        messages:
+            success: '已设置班表别名: {name} ({id}) -> {nickname}'
+            removed: '已删除班表别名: {name} ({id})'
+            notFound: '未找到匹配的用户'
+            multiMatch: '匹配到多个用户，请更具体:\n{matches}'
+            notInGuild: '仅支持在群组/服务器内指定用户'
+    ls-shift-alias:
+        description: '列出班表用户别名'
+        messages:
+            title: '班表用户别名列表:'
+            item: '- {id} | {name} | {nickname}'
+            none: '(无)'
     ls-channels:
         description: '列出当前班表/管理频道'
         messages:

@@ -8,7 +8,8 @@ import { paresMessageList, getGid, canGrant, isShiftOwner,
     getCurrentShift, loadShift, saveShift, roundToNearestHour,
     getTaskQueueKey, hoursToRanges, parseChannelId, readJson,
     commandTopRateRanking, serverNameFuzzySearchResult,
-    executeShiftChangeNoticeTask
+    executeShiftChangeNoticeTask,
+    getMemberDisplayName, resolveGuildMemberByInput
 } from './utils'
 
 export const name = 'bangdream-shift'
@@ -212,7 +213,6 @@ export async function apply(ctx: Context, cfg: Config) {
                         using: true,
                         is_owner: true
                     })
-
                     return session.text('.success', { name: name })
                 } catch (e) {
                     if (e instanceof ShiftError) {
@@ -876,6 +876,60 @@ export async function apply(ctx: Context, cfg: Config) {
 
         if (cfg.autoRecognize) {
 
+            ctx.command('set-shift-alias [nickname:text] [user:text]')
+                .action(async ({ session }, nickname, user) => {
+                    bdShiftLogger.info(session.userId, 'try to set shift alias: ', nickname, user);
+                    if (user && !await canGrant(session)) return session.text('permission-denied');
+
+                    const row = await autoLoadShift(session);
+                    if (!row) return session.text('noGroups');
+
+                    let targetId = session.userId;
+                    let targetName = session.username || session.userId;
+
+                    if (user) {
+                        if (!session.guildId) return session.text('.notInGuild');
+                        const resolved = await resolveGuildMemberByInput(session, user);
+                        if (resolved.matches?.length) {
+                            const matches = resolved.matches
+                                .map(m => `- ${m.id} ${m.name}`)
+                                .join('\n');
+                            return session.text('.multiMatch', { matches });
+                        }
+                        if (!resolved.member) return session.text('.notFound');
+                        targetId = resolved.member.id;
+                        targetName = resolved.member.name || resolved.member.nick || resolved.member.id;
+                    } else if (session.guildId) {
+                        const member = await session.bot.getGuildMember(session.guildId, session.userId).catch(() => null);
+                        if (member) targetName = getMemberDisplayName(member);
+                    }
+
+                    if (!nickname) {
+                        row.shiftTable.removeShiftAlias(targetId);
+                        await saveShift(ctx, row);
+                        return session.text('.removed', { name: targetName, id: targetId });
+                    }
+
+                    row.shiftTable.setShiftAlias(targetId, targetName, nickname);
+                    await saveShift(ctx, row);
+
+                    return session.text('.success', { name: targetName, id: targetId, nickname });
+                });
+
+            ctx.command('ls-shift-alias')
+                .action(async ({ session }) => {
+                    bdShiftLogger.info(session.userId, 'try to list shift alias');
+
+                    const row = await autoLoadShift(session);
+                    if (!row) return session.text('noGroups');
+
+                    const list = row.shiftTable.listShiftAliases();
+                    if (!list.length) return session.text('.none');
+
+                    const lines = list.map(item => session.text('.item', item));
+                    return [session.text('.title'), ...lines].join('\n');
+                });
+
             ctx.command('ls-channels')
                 .action(async ({ session }) => {
                     bdShiftLogger.info(session.userId, 'try to list channel');
@@ -1154,6 +1208,8 @@ export async function apply(ctx: Context, cfg: Config) {
 
                 const guildMember = await session.bot.getGuildMember(session.guildId, session.userId);
                 const nickname = guildMember.nick || session?.event?.member?.nick || guildMember.user.nick || session?.event?.user?.nick || session.username || guildMember.user.name || session.userId;
+                const userAlias = shiftTable.getShiftAlias(session.userId)?.nickname;
+                const userName = userAlias || nickname;
                 const timeRegex = new RegExp(cfg.autoRecognizeRegex, 'g');
                 const matches = [...session.content.matchAll(timeRegex)];
 
@@ -1165,7 +1221,6 @@ export async function apply(ctx: Context, cfg: Config) {
                 const quoteContent = `> ${messageLink}\n> ${nickname}: \n> ${pureText.replaceAll('\n', '\n> ')}`;
 
                 if (matches.length > 0) {
-                    const userName = nickname;
                     // 用于收集当前这一组发出的子消息 ID
                     // const currentGroupIds: string[] = [];
                     // 遍历内存中所有还在等待的消息，移除它们的提交勾，防止多处提交导致冲突
@@ -1499,8 +1554,10 @@ export async function apply(ctx: Context, cfg: Config) {
             ctx.command('test [param1:text]')
                 .alias('test')
                 .action(async ({ session }, param1) => {
-                    console.log(await session.bot.getGuildMember(session.guildId, session.userId));
+                    //console.log(await session.bot.getGuildMember(session.guildId, session.userId));
                     // await session.send('测试成功');
+                    //const guildList = await session.bot.getGuildMemberList(session.guildId);
+                    //console.dir(guildList, {depth: Infinity});
                 });
         }
 
@@ -1508,7 +1565,7 @@ export async function apply(ctx: Context, cfg: Config) {
             ctx.command('test2 [param1:text]')
                 .alias('test2')
                 .action(async ({ session }, param1) => {
-                    console.log(param1)
+                    // console.log(param1)
                     // await session.send('测试成功2');
                 });
         }
