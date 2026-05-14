@@ -1,17 +1,14 @@
 import { Context, Schema, Session, Logger, h } from 'koishi'
-import * as utils from "./utils";
 import { HourColor, ShiftTable, Ranking, ShiftError, ShiftTableSchema, LegacyShiftTableSchema } from "./shift";
-import Bottleneck from 'bottleneck';
-import { Discord } from '@koishijs/plugin-adapter-discord'
 import {} from 'koishi-plugin-puppeteer'
-import { GoogleSheetAuth, GoogleSheetParams } from "./googleSheetHandler";
+import {} from '@koishijs/plugin-adapter-discord'
+import { GoogleSheetParams } from "./googleSheetHandler";
 import { PendingShift, QueueManager } from "./queueManager";
 import { paresMessageList, getGid, canGrant, isShiftOwner,
     getCurrentShift, loadShift, saveShift, roundToNearestHour,
-    getTaskQueueKey, hoursToRanges, getDataFromBackend,
-    getReplyFromBackend, parseChannelId, readJson,
-    commandTopRateRanking, getFuzzySearchResult,
-    serverNameFuzzySearchResult, executeShiftChangeNoticeTask
+    getTaskQueueKey, hoursToRanges, parseChannelId, readJson,
+    commandTopRateRanking, serverNameFuzzySearchResult,
+    executeShiftChangeNoticeTask
 } from './utils'
 
 export const name = 'bangdream-shift'
