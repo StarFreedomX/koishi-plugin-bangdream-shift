@@ -139,6 +139,7 @@ commands:
             notInChannel: '频道参数无效，请输入正确的频道 ID / mention / 链接'
             notice: "即将到达{hour}时\n下车：{offDuty}\n上车：{onDuty}\n请上车的人员提前输入房间号做好准备"
             name-connect-symbol: '、'
+            suffix: ''
             none: '无'
     interval-speed-on:
         description: '开启车速定时推送'

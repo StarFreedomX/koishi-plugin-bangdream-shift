@@ -105,8 +105,9 @@ commands:
             enabled: 'シフト交代通知を有効化しました。通知先: {channel}'
             disabled: 'シフト交代通知を無効化しました（以前の通知先: {channel}）'
             notInChannel: 'チャンネル指定が無効です。ID / メンション / URL を確認してください'
-            notice: "もうすぐ{hour}時です\n出：{offDuty}さん\n入：{onDuty}さん\n入る方は事前に部屋番号を入力して待機をお願いします"
-            name-connect-symbol: 'さん、'
+            notice: "もうすぐ{hour}時です\n出：{offDuty}\n入：{onDuty}\n入る方は事前に部屋番号を入力して待機をお願いします"
+            name-connect-symbol: '、'
+            suffix: 'さん'
             none: 'なし'
     interval-speed-on:
         description: '車速定時プッシュを有効化'

@@ -107,6 +107,7 @@ commands:
             notInChannel: '頻道參數無效，請輸入正確的頻道 ID / mention / 連結'
             notice: "即將到達{hour}時\n下車：{offDuty}\n上車：{onDuty}\n請上車的人員提前輸入房間號做好準備"
             name-connect-symbol: '、'
+            suffix: ''
             none: '無'
     interval-speed-on:
         description: '開啟車速定時推播'

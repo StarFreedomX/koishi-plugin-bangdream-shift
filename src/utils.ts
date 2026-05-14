@@ -385,6 +385,10 @@ export async function executeShiftChangeNoticeTask(ctx: Context, cfg: Config, lo
             if (!loaded) continue;
 
             const st = loaded.shiftTable;
+            //同步
+            await st.pull();
+            await saveShift(ctx, loaded);
+
             const notice = st.getChangeNotice();
             if (!notice || !notice.enabled || !notice.channel) continue;
             const locale = notice.locale || 'ja-JP';
@@ -407,9 +411,10 @@ export async function executeShiftChangeNoticeTask(ctx: Context, cfg: Config, lo
             };
             const noneRendered = ctx.i18n.render([locale], ['commands.shift-change-notice.messages.none'], {});
             const noneText = fragmentToText(noneRendered);
-            const nameConnectSymbol = ctx.i18n.render([locale], ['commands.shift-change-notice.messages.name-connect-symbol'], {});
-            const onDuty = exchange.onDuty?.length ? exchange.onDuty.join(fragmentToText(nameConnectSymbol)) : noneText;
-            const offDuty = exchange.offDuty?.length ? exchange.offDuty.join(fragmentToText(nameConnectSymbol)) : noneText;
+            const nameConnectSymbol = fragmentToText(ctx.i18n.render([locale], ['commands.shift-change-notice.messages.name-connect-symbol'], {}));
+            const nameSuffix = fragmentToText(ctx.i18n.render([locale], ['commands.shift-change-notice.messages.suffix'], {}));
+            const onDuty = exchange.onDuty?.length ? exchange.onDuty.map(n=>n+nameSuffix).join(nameConnectSymbol) : noneText;
+            const offDuty = exchange.offDuty?.length ? exchange.offDuty.map(n=>n+nameSuffix).join(nameConnectSymbol) : noneText;
             const rendered = ctx.i18n.render([locale], ['commands.shift-change-notice.messages.notice'], {
                 hour,
                 offDuty,
