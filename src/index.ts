@@ -1481,8 +1481,9 @@ export async function apply(ctx: Context, cfg: Config) {
                     }
 
                     // --- 强制提交逻辑检测 ---
-                    let count = (forceSubmitCounter.get(sid) || 0) + 1;
-                    forceSubmitCounter.set(sid, count);
+                    // 强制提交添加频道检测
+                    let count = (forceSubmitCounter.get(`${sid}:${cleanId}`) || 0) + 1;
+                    forceSubmitCounter.set(`${sid}:${cleanId}`, count);
 
                     // --- 如果有没点的，直接拦截并提示 ---
                     if (hasUnprocessed && count < 3) {
