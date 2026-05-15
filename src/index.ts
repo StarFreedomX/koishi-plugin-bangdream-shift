@@ -65,6 +65,7 @@ export interface Config {
     defaultTimezone: string,
     defaultServer: Server,
     backendUrl: string,
+    shiftNoticeMinute: number,
     googleAuth?: {
         client_email: string;
         private_key: string;
@@ -91,6 +92,7 @@ export const Config = Schema.intersect([
         autoRecognize: Schema.boolean().default(false).description('班表自动识别'),
         autoRecognizeRegex: Schema.string().default("(\\d{1,2})[ー\\-\\~～;；](\\d{1,2})").description('识别填班的正则表达式'),
         defaultTimezone: Schema.string().default('Asia/Tokyo'),
+        shiftNoticeMinute: Schema.number().min(0).max(59).default(5).description("换班通知提前的分钟数"),
     }).description('班表基础设置'),
     Schema.object({
         defaultServer: Schema.union([
@@ -846,13 +848,13 @@ export async function apply(ctx: Context, cfg: Config) {
                 }
             });
 
-        // 换班通知调度：每小时检查一次，提前 MINUTES_BEFORE 分钟触发（MINUTES_BEFORE 写死在程序中）
-        const MINUTES_BEFORE = 5;
+        // 换班通知调度：每小时检查一次，提前 DEFAULT_MINUTES_BEFORE 分钟触发
+        const DEFAULT_MINUTES_BEFORE = 5;
 
         const alignToHourlyNotice = () => {
             const now = Date.now();
             // 计算距离下一个整点再减去提前分钟数的毫秒数
-            let delay = 3600000 - (now % 3600000) - MINUTES_BEFORE * 60000;
+            let delay = 3600000 - (now % 3600000) - (cfg.shiftNoticeMinute ?? DEFAULT_MINUTES_BEFORE) * 60000;
             if (delay <= 0) delay += 3600000; // 保证为正
 
             ctx.setTimeout(async () => {
