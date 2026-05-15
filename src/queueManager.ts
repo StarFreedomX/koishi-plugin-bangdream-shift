@@ -11,6 +11,9 @@ export interface PendingShift {
     timestamp: number;
     rootId?: string;
     childIds?: string[];
+    sourceMessageId?: string;
+    targetChannelId?: string;
+    rootContent?: string;
 }
 
 export class QueueManager {
@@ -19,6 +22,7 @@ export class QueueManager {
     private limiterGroup: Bottleneck.Group;
     private logger: Logger;
     private maxRetryCounts = 3;
+    private guardTokenMap = new Map<string, number>();
 
     constructor(private ctx: Context, cfg: Config) {
         this.logger = ctx.logger('shift-queue');
@@ -57,10 +61,27 @@ export class QueueManager {
         return false;
     }
 
+    updateGuard(guardKey: string) {
+        const current = this.guardTokenMap.get(guardKey) ?? 0;
+        this.guardTokenMap.set(guardKey, current + 1);
+    }
+
     /**
      * 入队函数：内置 429 解析与重试逻辑
      */
-    async addTaskToQueue(queueKey: string, task: () => Promise<any>, id?: string) {
+    async addTaskToQueue(
+        queueKey: string,
+        task: () => Promise<any>,
+        idOrOptions?: string | {
+            id?: string;
+            guardKey?: string;
+            onUndo?: (result: any[]) => Promise<void> | void
+        }
+    ) {
+        const options = typeof idOrOptions === 'string' ? { id: idOrOptions } : (idOrOptions || {});
+        const { id, guardKey, onUndo } = options;
+        // 这里获取guardToken的快照，确保在任务执行过程中guardKey如果发生变化（如被update），可以正确识别并触发撤销逻辑
+        const guardToken = guardKey ? (this.guardTokenMap.get(guardKey) ?? 0) : 0;
         const limiter = this.limiterGroup.key(queueKey);
         const myVersion = Date.now();
         if (id?.startsWith('CHECK-')) {
@@ -71,6 +92,10 @@ export class QueueManager {
             let retryCount = 0;
 
             const executeWithRetry = async (): Promise<any[]> => {
+                // guardKey 变更则取消本次任务
+                if (guardKey && (this.guardTokenMap.get(guardKey) ?? 0) !== guardToken) {
+                    return [null];
+                }
                 // 版本合法性检查
                 if (id?.startsWith('CHECK-')) {
                     if (this.latestVersionMap.get(id) !== myVersion) {
@@ -79,8 +104,23 @@ export class QueueManager {
                 }
 
                 try {
-                    const result = await task();
-                    return Array.isArray(result) ? result : [result ?? null];
+                    // 调用平台 API 发送消息
+                    const rawResult = await task();
+                    const result = Array.isArray(rawResult) ? rawResult : [rawResult ?? null];
+
+                    // 后置校验
+                    if (guardKey && (this.guardTokenMap.get(guardKey) ?? 0) !== guardToken) {
+                        if (onUndo) {
+                            // 异步执行撤销
+                            this.logger.info(`[Guard] 任务 ${id} 执行期间 key 失效，触发撤销回调...`);
+                            void Promise.resolve(onUndo(result)).catch((e) => {
+                                this.logger.error(`[Guard] 任务 ${id} 撤销回调执行失败:`, e);
+                            });
+                        }
+                        return [null];
+                    }
+
+                    return result;
                 } catch (err: any) {
                     // 插件销毁直接退出
                     if (this.isDisposedError(err)) return [null];

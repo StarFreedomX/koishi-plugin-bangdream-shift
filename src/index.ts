@@ -875,6 +875,60 @@ export async function apply(ctx: Context, cfg: Config) {
         alignToHourlyNotice();
 
         if (cfg.autoRecognize) {
+            const getSourceGuardKey = (sourceMessageId: string) => `source:${sourceMessageId}`;
+
+            async function clearPendingForSource(session: Session, sourceMessageId: string) {
+                const relatedEntries = [...queue.pendingShifts.entries()]
+                    .filter(([, data]) => data.sourceMessageId === sourceMessageId);
+                if (!relatedEntries.length) return;
+
+                const guardKey = getSourceGuardKey(sourceMessageId);
+                queue.updateGuard(guardKey);
+
+                const bot = session.bot;
+                const rootEntries = relatedEntries.filter(([, data]) => Array.isArray(data.childIds));
+
+                await Promise.all(rootEntries.map(async ([rootId, data]) => {
+                    const channelId = data.targetChannelId;
+                    if (!channelId) return;
+                    const cleanId = channelId.includes(':') ? channelId.split(':').pop() : channelId;
+
+                    void queue.addTaskToQueue(
+                        getTaskQueueKey(cleanId, 'emoji'),
+                        () => session.bot.createReaction(cleanId, rootId, '🖊️'),
+                        { id: `task-${ rootId }-🖊️` }
+                    );
+                    if (data.childIds?.length) {
+                        await Promise.all(data.childIds.map(async (childId) => {
+                            const childData = queue.pendingShifts.get(childId);
+                            const childChannelId = childData?.targetChannelId || channelId;
+                            if (!childChannelId) return;
+                            await bot.deleteMessage(childChannelId, childId).catch(() => {});
+                            queue.pendingShifts.delete(childId);
+                        }));
+                    }
+                }));
+
+                for (const [msgId, data] of relatedEntries) {
+                    if (Array.isArray(data.childIds)) continue;
+                    const channelId = data.targetChannelId;
+                    if (!channelId) continue;
+                    const cleanId = channelId.includes(':') ? channelId.split(':').pop() : channelId;
+
+
+                    if (!channelId) continue;
+                    void queue.addTaskToQueue(
+                        getTaskQueueKey(cleanId, 'message'),
+                        () => session.bot.deleteMessage(channelId, msgId).catch(() => {}),
+                        { id: `task-${ msgId }-delete-msg` }
+                    );
+                    queue.pendingShifts.delete(msgId);
+                }
+
+                for (const [rootId] of rootEntries) {
+                    queue.pendingShifts.delete(rootId);
+                }
+            }
 
             ctx.command('set-shift-alias [nickname:text] [user:text]')
                 .action(async ({ session }, nickname, user) => {
@@ -1120,6 +1174,7 @@ export async function apply(ctx: Context, cfg: Config) {
             async function updateMessageUI(session: Session, oldMsgId: string, newContent: string, data: PendingShift) {
                 const channelId = session.channelId;
                 const bot = session.bot;
+                data.targetChannelId = data.targetChannelId || channelId;
 
                 // 构造最终展示文本
                 const finalContent = h.parse(`${newContent}\n*(已修正)*`);
@@ -1170,13 +1225,12 @@ export async function apply(ctx: Context, cfg: Config) {
                 }
             }
 
-
-
-
-
-            // --- 识别填班并拆分发送 ---
-            ctx.middleware(async (session, next) => {
-                if (!session.channelId || !session.content || session.userId === session.selfId) return;
+            async function handleAutoRecognize(session: Session, isEdit: boolean): Promise<boolean> {
+                if (!session.channelId || session.userId === session.selfId) return true;
+                if (isEdit && session.messageId) {
+                    await clearPendingForSource(session, session.messageId);
+                }
+                if (!session.content) return true;
                 // --- 提取文本内容 ---
                 const elements = h.parse(session.content);
                 const pureText = elements
@@ -1191,11 +1245,11 @@ export async function apply(ctx: Context, cfg: Config) {
                     .trim();
 
                 // --- 预检：如果没有文字内容且不包含数字，直接跳过 ---
-                if (!pureText && !/\d/.test(session.content)) return next();
+                if (!pureText && !/\d/.test(session.content)) return true;
 
                 const gid = getGid(session);
                 const curr = await getCurrentShift(ctx, gid);
-                if (!curr) return next();
+                if (!curr) return true;
 
                 // 只有确定可能有排班信息（有数字或文字），才去加载表格数据
                 const row = await loadShift(ctx, curr.shift_id, cfg.googleAuth);
@@ -1204,7 +1258,7 @@ export async function apply(ctx: Context, cfg: Config) {
                 // 匹配频道天数
                 const dayIndex = shiftTable.shift_channels[session.channelId] ??
                     shiftTable.shift_channels[`${session.platform}:${session.channelId}`];
-                if (dayIndex === undefined) return next();
+                if (dayIndex === undefined) return true;
 
                 const guildMember = await session.bot.getGuildMember(session.guildId, session.userId);
                 const nickname = guildMember.nick || session?.event?.member?.nick || guildMember.user.nick || session?.event?.user?.nick || session.username || guildMember.user.name || session.userId;
@@ -1214,11 +1268,11 @@ export async function apply(ctx: Context, cfg: Config) {
                 const matches = [...session.content.matchAll(timeRegex)];
 
                 // 构造引用内容（此时 pureText 肯定不为空，或者是包含数字的内容）
-
                 const channelTitle = (await session.bot.getChannel(session.channelId).catch(() => ({ name: '未知' }))).name;
                 const messageLink = session.platform === 'discord' ? `https://discord.com/channels/${session.guildId}/${session.channelId}/${session.messageId}` : channelTitle;
 
                 const quoteContent = `> ${messageLink}\n> ${nickname}: \n> ${pureText.replaceAll('\n', '\n> ')}`;
+                const guardKey = session.messageId ? getSourceGuardKey(session.messageId) : undefined;
 
                 if (matches.length > 0) {
                     // 用于收集当前这一组发出的子消息 ID
@@ -1250,7 +1304,9 @@ export async function apply(ctx: Context, cfg: Config) {
                             const [rootId] = await queue.addTaskToQueue(
                                 getTaskQueueKey(cleanId, 'message'),
                                 () => session.bot.sendMessage(cleanId, quoteContent),
-                                `root-${ cleanId }-${ session.messageId }`
+                                // 并发情况下，可能存在同一条消息快速修改引发的id相同
+                                //{ id: `root-${ cleanId }-${ session.messageId }`, guardKey }
+                                { id: `root-${ cleanId }-${ session.messageId }-${Date.now()}`, guardKey }
                             ).catch(e => {
                                 bdShiftLogger.error(`[Shift] 根消息发送失败:`, e.message);
                                 return [null];
@@ -1265,7 +1321,10 @@ export async function apply(ctx: Context, cfg: Config) {
                                 shiftId: curr.shift_id,
                                 last: false,
                                 timestamp: Date.now(),
-                                childIds: [] // 稍后填充
+                                childIds: [], // 稍后填充
+                                sourceMessageId: session.messageId,
+                                targetChannelId: cleanId,
+                                rootContent: quoteContent
                             });
 
                             const childIdsForThisRoot: string[] = [];
@@ -1285,7 +1344,13 @@ export async function apply(ctx: Context, cfg: Config) {
                                 void queue.addTaskToQueue(
                                     getTaskQueueKey(cleanId, 'message'),
                                     () => session.bot.sendMessage(cleanId, confirmContent),
-                                    `child-${cleanId}-${i}-${Date.now()}`
+                                    {
+                                        id: `child-${cleanId}-${i}-${Date.now()}`,
+                                        guardKey,
+                                        onUndo: async ([sentMsgId]) => {
+                                            if (!sentMsgId) return;
+                                            await session.bot.deleteMessage(cleanId, sentMsgId).catch(() => {});
+                                        } }
                                 ).then(([sentMsgId]) => {
                                     // 只有当消息真的发出去（从队列里轮到它并执行完）后，才会进到这里
                                     if (!sentMsgId) return;
@@ -1298,7 +1363,9 @@ export async function apply(ctx: Context, cfg: Config) {
                                         shiftId: curr.shift_id,
                                         last: isLast,
                                         timestamp: Date.now(),
-                                        rootId: rootId
+                                        rootId: rootId,
+                                        sourceMessageId: session.messageId,
+                                        targetChannelId: cleanId
                                     });
 
                                     childIdsForThisRoot.push(sentMsgId);
@@ -1310,14 +1377,14 @@ export async function apply(ctx: Context, cfg: Config) {
                                         void queue.addTaskToQueue(
                                             getTaskQueueKey(cleanId, 'emoji'),
                                             () => session.bot.createReaction(cleanId, sentMsgId, emoji),
-                                            `task-${sentMsgId}-${emoji}`
+                                            { id: `task-${sentMsgId}-${emoji}-${Date.now()}`, guardKey }
                                         );
                                     }
                                     if (isLast) {
                                         void queue.addTaskToQueue(
                                             getTaskQueueKey(cleanId, 'emoji'),
                                             () => session.bot.createReaction(cleanId, sentMsgId, '✅'),
-                                            `CHECK-${getTaskQueueKey(cleanId, 'emoji')}`
+                                            { id: `CHECK-${sentMsgId}-${Date.now()}`, guardKey }
                                         );
                                     }
                                 });
@@ -1331,18 +1398,31 @@ export async function apply(ctx: Context, cfg: Config) {
                             bdShiftLogger.error(`[Shift] 频道处理异常:`, err);
                         }
                     }))
+                    return false;
                 } else if (/\d/.test(session.content)) {
                     // --- 没识别到填班但包含数字：提示未识别 ---
                     for (let targetChannel of shiftTable.manager_channels) {
                         const cleanId = targetChannel.includes(':') ? targetChannel.split(':').pop() : targetChannel;
                         try {
                             await session.bot.sendMessage(cleanId, session.text('auto-shift.noMatch', { quote: quoteContent }));
-                        } catch (e) {
-                            bdShiftLogger.error(e);
+                        } catch (err) {
+                            bdShiftLogger.error(`[Shift] 频道提示异常:`, err);
                         }
                     }
+                    return false;
                 }
-                await next();
+
+                return true;
+            }
+
+            ctx.on('message-updated', async (session) => {
+                await handleAutoRecognize(session, true);
+            });
+
+            // --- 识别填班并拆分发送 ---
+            ctx.middleware(async (session, next) => {
+                const shouldNext = await handleAutoRecognize(session, false);
+                if (shouldNext) return next();
             });
 
             // 处理表情标记与最终提交
