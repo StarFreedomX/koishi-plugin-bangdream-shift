@@ -1494,7 +1494,8 @@ export async function apply(ctx: Context, cfg: Config) {
                     }
 
                     // --- 执行处理逻辑 ---
-                    const results = [];
+                    const successEntries: string[] = [];
+                    const failEntries: string[] = [];
                     // 只有当确实有 add/del 任务时，才执行数据库操作
                     if (tasksByDay.size > 0) {
                         const row = await loadShift(ctx, sid, cfg.googleAuth);
@@ -1502,29 +1503,71 @@ export async function apply(ctx: Context, cfg: Config) {
                         await shiftTable.pull();
 
                         for (const [dayIndex, tasks] of tasksByDay.entries()) {
-                            for (const task of tasks) {
-                                const actionText = session.text(`auto-shift.${task.slot.action}`);
+                            const addSuccessEntries: string[] = [];
+                            const addFailEntries: string[] = [];
+                            const delSuccessEntries: string[] = [];
+                            const delFailEntries: string[] = [];
 
+                            for (const task of tasks) {
                                 if (task.slot.action === 'add') {
-                                    await shiftTable.addShift(dayIndex, task.slot.start, task.slot.end, task.userName, true);
+                                    const { success, failed } = await shiftTable.addShift(dayIndex, task.slot.start, task.slot.end, task.userName, true);
+                                    if (success.length > 0) {
+                                        addSuccessEntries.push(session.text('auto-shift.person-hours', {
+                                            person: task.userName,
+                                            hourRange: hoursToRanges(success).join(' ')
+                                        }));
+                                    }
+                                    if (failed.length > 0) {
+                                        addFailEntries.push(session.text('auto-shift.person-hours', {
+                                            person: task.userName,
+                                            hourRange: hoursToRanges(failed).join(' ')
+                                        }));
+                                    }
                                 } else {
-                                    await shiftTable.delShift(dayIndex, task.slot.start, task.slot.end, task.userName, true);
+                                    const removed = await shiftTable.delShift(dayIndex, task.slot.start, task.slot.end, task.userName, true);
+                                    if (removed.length > 0) {
+                                        delSuccessEntries.push(session.text('auto-shift.person-hours', {
+                                            person: task.userName,
+                                            hourRange: hoursToRanges(removed).join(' ')
+                                        }));
+                                    } else {
+                                        delFailEntries.push(session.text('auto-shift.person-hours', {
+                                            person: task.userName,
+                                            hourRange: `${task.slot.start}-${task.slot.end}`
+                                        }));
+                                    }
                                 }
-                                // 记录 add/del 的结果
-                                results.push(`- [${actionText}] ${task.userName} ${dayIndex + 1}日目 ${task.slot.start}-${task.slot.end}`);
                             }
+
+                            if (addSuccessEntries.length > 0) {
+                                successEntries.push(session.text('auto-shift.success', { day: dayIndex + 1, message: addSuccessEntries.join('\n') }));
+                            }
+                            if (addFailEntries.length > 0) {
+                                failEntries.push(session.text('auto-shift.fail', { day: dayIndex + 1, message: addFailEntries.join('\n') }));
+                            }
+                            if (delSuccessEntries.length > 0) {
+                                successEntries.push(session.text('auto-shift.del-success', { day: dayIndex + 1, message: delSuccessEntries.join('\n') }));
+                            }
+                            if (delFailEntries.length > 0) {
+                                failEntries.push(session.text('auto-shift.del-fail', { day: dayIndex + 1, message: delFailEntries.join('\n') }));
+                            }
+
                             await shiftTable.pushDay(dayIndex);
                         }
                         await saveShift(ctx, row);
                     }
-                    results.push(...skippedItems);
+
+                    const finalMsg: string[] = [];
+                    if (successEntries.length > 0) finalMsg.push(successEntries.join('\n'));
+                    if (failEntries.length > 0) finalMsg.push(failEntries.join('\n'));
+                    finalMsg.push(...skippedItems);
                     // 如果是强制提交(count >= 3)，清理该 shiftId 下的所有消息，防止幽灵残留
                     if (count >= 3) {
                         for (const [msgId, data] of queue.pendingShifts.entries()) {
                             if (data.shiftId === sid) queue.pendingShifts.delete(msgId);
                         }
-                        results.push(...unProcessedItems); // 把未处理的项也列出来，提示用户哪些没处理
-                        results.push(session.text('auto-shift.force-cleaned')); // 提示已强制清理
+                        finalMsg.push(...unProcessedItems); // 把未处理的项也列出来，提示用户哪些没处理
+                        finalMsg.push(session.text('auto-shift.force-cleaned')); // 提示已强制清理
                     } else {
                         // 正常清理：只删除本次处理了的消息
                         messagesToRemove.forEach(id => queue.pendingShifts.delete(id));
@@ -1532,9 +1575,8 @@ export async function apply(ctx: Context, cfg: Config) {
                     // 重置计数器
                     forceSubmitCounter.delete(sid);
 
-                    if (results.length > 0) {
-                        const summary = session.text('auto-shift.finish', { results: results.join('\n') });
-                        await session.bot.sendMessage(session.channelId, summary);
+                    if (finalMsg.length > 0) {
+                        await session.bot.sendMessage(session.channelId, finalMsg.join('\n'));
                     }
                 }
             });
