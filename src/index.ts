@@ -1480,10 +1480,10 @@ export async function apply(ctx: Context, cfg: Config) {
                         }
                     }
 
-                    // --- 强制提交逻辑检测 ---
-                    // 强制提交添加频道检测
-                    let count = (forceSubmitCounter.get(`${sid}:${cleanId}`) || 0) + 1;
-                    forceSubmitCounter.set(`${sid}:${cleanId}`, count);
+                    // 按班表和频道累计有未处理消息时的提交次数
+                    const counterKey = `${sid}:${cleanId}`;
+                    const count = hasUnprocessed ? (forceSubmitCounter.get(counterKey) || 0) + 1 : 0;
+                    if (hasUnprocessed) forceSubmitCounter.set(counterKey, count);
 
                     // --- 如果有没点的，直接拦截并提示 ---
                     if (hasUnprocessed && count < 3) {
@@ -1516,8 +1516,8 @@ export async function apply(ctx: Context, cfg: Config) {
                         await saveShift(ctx, row);
                     }
                     results.push(...skippedItems);
-                    // 如果是强制提交(count >= 3)，清理该 shiftId 下的所有消息，防止幽灵残留
-                    if (count >= 3) {
+                    // 连续三次提交仍有未处理消息时，清理该班表的待审核记录
+                    if (hasUnprocessed && count >= 3) {
                         for (const [msgId, data] of queue.pendingShifts.entries()) {
                             if (data.shiftId === sid) queue.pendingShifts.delete(msgId);
                         }
@@ -1528,7 +1528,7 @@ export async function apply(ctx: Context, cfg: Config) {
                         messagesToRemove.forEach(id => queue.pendingShifts.delete(id));
                     }
                     // 重置计数器
-                    forceSubmitCounter.delete(sid);
+                    forceSubmitCounter.delete(counterKey);
 
                     if (results.length > 0) {
                         const summary = session.text('auto-shift.finish', { results: results.join('\n') });
