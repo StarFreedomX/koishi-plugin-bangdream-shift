@@ -160,7 +160,7 @@ export class GoogleSheetHandler {
 
                 // const block = shiftTable.shift_table[dayIndex][h];
                 const block = shiftTable.getRow(dayIndex, h);
-                const name = (block.hourColor !== 'invalid') ? (block.persons[pIdx] || "") : "";
+                const name = (block.hourColor !== 'invalid') ? this.sanitizeCellValue(block.persons[pIdx] || "") : "";
                 columnValues.push([name]);
 
                 if (this.rowInterval > 0 && h < 23) {
@@ -238,5 +238,16 @@ export class GoogleSheetHandler {
             num = Math.floor(num / 26) - 1;
         }
         return col;
+    }
+
+    /**
+     * 防止 Google Sheets 将以 = 或 ' 开头的值解释为公式或特殊字符。
+     * 在写入前，如果值以 = 或 ' 开头，前面加一个单引号强制文本模式。
+     */
+    private sanitizeCellValue(value: string): string {
+        if (value && (value.startsWith('=') || value.startsWith("'"))) {
+            return "'" + value;
+        }
+        return value;
     }
 }

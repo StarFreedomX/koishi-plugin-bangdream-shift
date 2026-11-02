@@ -15,6 +15,11 @@ auto-shift:
     del: '删除'
     skip: '跳过'
     unprocessed: '未处理'
+    success: '✅ 已添加以下排班: <br/>第{day}天<br/>{message}'
+    fail: '⚠️ 以下时间段已经输入过，或时间段已满: <br/>第{day}天<br/>{message}'
+    del-success: '✅ 已删除以下排班: <br/>第{day}天<br/>{message}'
+    del-fail: '⚠️ 以下时间段中无该玩家排班: <br/>第{day}天<br/>{message}'
+    person-hours: '{person} {hourRange}'
 
 commands:
     create-shift:
